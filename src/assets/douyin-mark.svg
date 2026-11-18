@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <defs>
+    <path id="note" d="M13.2 3.2h3.2a4.8 4.8 0 0 0 4.3 4.2v3.2a7.8 7.8 0 0 1-4.3-1.3v6.1a5.6 5.6 0 1 1-5.6-5.6c.3 0 .7 0 1 .1v3.2a2.4 2.4 0 1 0 1.4 2.2V3.2Z"/>
+  </defs>
+  <use href="#note" fill="#25f4ee" transform="translate(-.9 -.65)"/>
+  <use href="#note" fill="#fe2c55" transform="translate(.9 .75)"/>
+  <use href="#note" fill="#fff9f6"/>
+</svg>

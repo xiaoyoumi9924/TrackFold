@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 214" preserveAspectRatio="none">
+  <defs>
+    <linearGradient id="glow" x1="0" x2=".96" y1=".8" y2="0" gradientUnits="objectBoundingBox">
+      <stop offset=".37" stop-color="#a95f48" stop-opacity="0"/>
+      <stop offset=".75" stop-color="#d97454" stop-opacity=".47"/>
+      <stop offset="1" stop-color="#fa9770"/>
+    </linearGradient>
+    <linearGradient id="shade" x2=".15" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#9c513e" stop-opacity=".83"/>
+      <stop offset=".7" stop-color="#1b1515" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="350" x2="820" y1="0" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#db7754" stop-opacity="0"/>
+      <stop offset=".65" stop-color="#ed8660" stop-opacity=".6"/>
+      <stop offset="1" stop-color="#ff9a71"/>
+    </linearGradient>
+    <filter id="soft" x="-.25" width="1.5" y="-.8" height="2.6">
+      <feGaussianBlur stdDeviation="22"/>
+    </filter>
+  </defs>
+  <path d="M0 118C135 106 238 109 390 114S563 78 665 40 775 16 842 23V-65H0Z" fill="url(#glow)" filter="url(#soft)"/>
+  <path d="M0 118C135 106 238 109 390 114S563 78 665 40 775 16 842 23V-65H0Z" fill="url(#glow)" opacity=".75"/>
+  <path d="M0 118C135 106 238 109 390 114S563 78 665 40 775 16 842 23V213H0Z" fill="url(#shade)" opacity=".38"/>
+  <path d="M390 114C494 116 563 78 665 40S775 16 842 23" fill="none" stroke="url(#edge)" stroke-width="21" filter="url(#soft)"/>
+  <path d="M390 114C494 116 563 78 665 40S775 16 842 23" fill="none" stroke="url(#edge)" stroke-width="1.2" opacity=".52"/>
+</svg>

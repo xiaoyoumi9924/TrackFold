@@ -1,0 +1,154 @@
+// All writes go to a fresh temporary profile. Never use the user's desktop data here.
+import { _electron } from 'playwright';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
+const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'shiyin-desktop-qa-')));
+const profile = path.join(root, 'profile'), output = path.join(root, 'output');
+const executablePath = process.env.SHIYIN_TEST_EXECUTABLE;
+const media = executablePath ? path.resolve(executablePath, '../../Resources/bin/ffmpeg') : path.resolve('vendor/ffmpeg/ffmpeg');
+const sample = path.join(root, 'desktop-test.wav');
+execFileSync(media, ['-v','error','-f','lavfi','-i','sine=frequency=440:duration=10',sample]);
+const args = executablePath ? [] : ['.'];
+const env = { ...process.env, PATH: '/usr/bin:/bin:/usr/sbin:/sbin', SHIYIN_DESKTOP_DATA_DIR: profile, SHIYIN_DESKTOP_OUTPUT_DIR: output };
+let application;
+const launch = () => _electron.launch({ ...(executablePath ? { executablePath } : {}), args, env, timeout: 45000 });
+const api = (page, url, body) => page.evaluate(async ({url,body}) => {
+  const result = await fetch(url, { ...(body ? { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) } : {}), signal:AbortSignal.timeout(30000) });
+  const data = await result.json(); if (!result.ok) throw new Error(data.error); return data;
+}, { url, body });
+try {
+  application = await launch();
+  let page = await application.firstWindow();
+  page.on('pageerror',error=>console.error('Renderer:',error.message));
+  page.on('requestfailed',request=>console.error('Request failed:',new URL(request.url()).pathname,request.failure()?.errorText));
+  await page.locator('main').waitFor();
+  await page.waitForFunction(() => !!window.shiyinDesktop);
+  const health = await api(page, '/api/health'); assert.equal(health.ffmpeg,true); assert.equal(health.desktop,true);
+  const port = new URL(page.url()).port;
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/health`)).status,403);
+  const origins = await page.evaluate(() => ({ node:typeof window.require, process:typeof window.process }));
+  assert.deepEqual(origins,{node:'undefined',process:'undefined'});
+  console.log('PASS isolated desktop, bundled engine, renderer isolation, private service');
+  await page.getByRole('button',{name:'视频提取',exact:true}).click();
+  await page.getByRole('heading',{name:'视频提取',exact:true}).waitFor();
+  await page.getByLabel('分享链接或分享文案').fill('https://example.com/video');
+  await page.getByRole('button',{name:'解析链接',exact:true}).click();
+  await page.getByRole('alert').filter({hasText:'平台资源域名暂未支持'}).waitFor({timeout:15000});
+  assert.equal(await api(page,'/api/video-current'),null);
+  await page.getByRole('button',{name:'音频提取',exact:true}).click();
+  console.log('PASS video navigation, rejected link and current status');
+  // Native picker uses the same system-dialog path as the real button; replace only user selection in QA.
+  const chosen = path.join(root,'chosen'); mkdirSync(chosen);
+  console.log('Checking native picker');
+  await application.evaluate(({dialog}, folder) => { dialog.showOpenDialog = async () => ({canceled:false,filePaths:[folder]}); },chosen);
+  assert.equal((await api(page,'/api/storage/choose-folder',{})).path,chosen);
+  console.log('PASS native picker');
+  await api(page,'/api/storage',{outputDir:chosen});
+  console.log('Updated output');
+  await page.getByRole('tab',{name:'本地文件',exact:true}).click();
+  console.log('Selected local import');
+  await page.locator('input[type=file]').setInputFiles(sample);
+  await page.waitForFunction(() => document.body.innerText.includes('desktop-test'));
+  console.log('Uploaded local file');
+  await page.locator('.resource-panel select').count().then(async n => {
+    if (n) return page.locator('.resource-panel select').last().selectOption('mp3');
+    const select = page.locator('select').filter({visible:true});
+    for (const el of await select.all()) if (await el.locator('option[value="mp3"]').count()) await el.selectOption('mp3');
+  });
+  const save = page.getByRole('button',{name:/提取并保存/}); await save.click();
+  let jobs;
+  for(let n=0;n<150;n++) {
+    jobs=await api(page,'/api/jobs');
+    if(jobs.some(j=>['completed','failed','cancelled'].includes(j.status))) break;
+    await new Promise(resolve=>setTimeout(resolve,200));
+  }
+  assert.equal(jobs.length,1); assert.equal(jobs[0].status,'completed',jobs[0].message); assert.equal(jobs[0].outputDir,chosen); assert.equal(jobs[0].format,'mp3');
+  assert.ok(Math.abs(jobs[0].duration-10)<0.2);
+  execFileSync(media,['-v','error','-i',jobs[0].filePath,'-f','null','-']);
+  console.log('PASS real local upload → MP3 → decode using bundled tools without Node/Homebrew PATH');
+  await page.getByRole('button',{name:'设置',exact:true}).click();
+  await page.getByRole('button',{name:'文件保存',exact:true}).click();
+  const uiFolder = path.join(root, 'settings-output');
+  mkdirSync(uiFolder);
+  await application.evaluate(({dialog}, folder) => { dialog.showOpenDialog = async () => ({canceled:false,filePaths:[folder]}); }, uiFolder);
+  const audioStorage = page.getByRole('region',{name:'音频文件夹',exact:true});
+  await audioStorage.getByRole('button',{name:'更改位置',exact:true}).click();
+  const folderField = audioStorage.getByRole('textbox',{name:'音频保存文件夹路径',exact:true});
+  await page.waitForFunction(folder=>document.querySelector('[aria-labelledby="storage-audio-title"] form input')?.value===folder, uiFolder);
+  assert.equal(await folderField.inputValue(),uiFolder);
+  assert.equal((await api(page,'/api/storage')).outputDir,chosen);
+  await audioStorage.getByRole('button',{name:'应用保存位置',exact:true}).click();
+  await page.getByText(/保存位置已更新/).waitFor();
+  assert.equal((await api(page,'/api/storage')).outputDir,uiFolder);
+  assert.equal((await api(page,'/api/jobs'))[0].outputDir,chosen);
+  await page.getByRole('radio',{name:/仅歌名/}).check();
+  await page.getByText('偏好已保存。').waitFor();
+  await page.getByRole('combobox',{name:'输出默认格式',exact:true}).selectOption('m4a');
+  await page.getByRole('button',{name:'通用',exact:true}).click();
+  await page.getByLabel('将可用封面写入音频').uncheck();
+  await page.waitForFunction(async()=>!(await (await fetch('/api/library/settings')).json()).embedCover);
+  assert.deepEqual(await api(page,'/api/library/settings'),{naming:'title',embedCover:false});
+  await page.getByRole('button',{name:'文件保存',exact:true}).click();
+  mkdirSync('.impeccable/review',{recursive:true});
+  await page.evaluate(()=>window.scrollTo(0,0));
+  const captureVersion=health.version.replaceAll('.','');
+  await page.screenshot({path:`.impeccable/review/desktop-settings-v${captureVersion}.png`,fullPage:true});
+  await application.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(860,600));
+  await page.screenshot({path:`.impeccable/review/desktop-settings-small-v${captureVersion}.png`,fullPage:true});
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  assert.equal(await page.getByText('桌面版记录', {exact:true}).count(), 0);
+  // Let explicit application quit finish, rather than Playwright force-closing a child process.
+  const exited = application.waitForEvent('close'); await application.evaluate(({app})=>app.quit()); await exited;
+  await assert.rejects(fetch(`http://127.0.0.1:${port}/api/health`));
+  application = await launch(); page = await application.firstWindow(); await page.locator('main').waitFor();
+  assert.equal(new URL(page.url()).port,port);
+  assert.equal((await api(page,'/api/jobs'))[0].id,jobs[0].id);
+  assert.equal((await api(page,'/api/storage')).outputDir,uiFolder);
+  await page.getByRole('button',{name:'设置',exact:true}).click();
+  await page.getByRole('button',{name:'文件保存',exact:true}).click();
+  assert.equal(await page.getByRole('combobox',{name:'输出默认格式',exact:true}).inputValue(),'m4a');
+  assert.deepEqual(await api(page,'/api/library/settings'),{naming:'title',embedCover:false});
+  console.log('PASS restart restores records, chosen output and private port; clean quit releases service');
+  await page.getByRole('button',{name:'音频提取',exact:true}).click();
+  await page.getByRole('tab',{name:'本地文件',exact:true}).click();
+  const secondSample = path.join(root, 'settings-batch.wav');
+  execFileSync(media, ['-v','error','-f','lavfi','-i','sine=frequency=550:duration=2',secondSample]);
+  await page.locator('.upload-entry input[type=file]').setInputFiles([sample,secondSample]);
+  const batchPanel = page.locator('.local-batch-panel');
+  await batchPanel.getByRole('button',{name:'保存所选 2 个',exact:true}).waitFor();
+  assert.equal(await batchPanel.getByLabel('输出格式',{exact:true}).inputValue(),'m4a');
+  assert.equal(await batchPanel.getByLabel('文件命名',{exact:true}).inputValue(),'title');
+  assert.equal(await batchPanel.getByLabel('本批保存位置',{exact:true}).inputValue(),uiFolder);
+  console.log('PASS a fresh batch uses the saved format, naming and destination');
+  let ended=application.waitForEvent('close'); await application.evaluate(({app})=>app.quit()); await ended; application=undefined;
+  // Read a live WAL from an old project, retaining file locations and leaving credentials behind.
+  const legacy = path.join(root,'old-project'); mkdirSync(path.join(legacy,'.local'),{recursive:true});
+  const db = new DatabaseSync(path.join(legacy,'.local/tasks.sqlite'));
+  db.exec('PRAGMA journal_mode=WAL;CREATE TABLE jobs(id TEXT PRIMARY KEY,value TEXT);CREATE TABLE batches(id TEXT PRIMARY KEY,value TEXT)');
+  db.prepare('INSERT INTO jobs VALUES (?,?)').run(jobs[0].id,JSON.stringify(jobs[0]));
+  writeFileSync(path.join(legacy,'.local/sessions.enc'),'not-for-import');
+  const importProfile=path.join(root,'import-profile');
+  application=await _electron.launch({...(executablePath?{executablePath}:{}),args:[...args, `--import-from=${legacy}`],env:{...env,SHIYIN_DESKTOP_DATA_DIR:importProfile},timeout:45000});
+  page=await application.firstWindow(); await page.locator('main').waitFor();
+  assert.equal((await api(page,'/api/jobs'))[0].filePath,jobs[0].filePath); db.close();
+  await application.evaluate(({dialog})=>{ globalThis.__qaQuitPromptCount=0; dialog.showMessageBox=async()=>{globalThis.__qaQuitPromptCount++;return {response:0};};});
+  // A resolving batch is genuine active work, but the deliberately invalid link saves no audio.
+  await api(page,'/api/batches',{input:'https://v.douyin.com/desktop-qa-unresolved/'});
+  await application.evaluate(({app})=>app.quit());
+  for(let n=0;n<50;n++) {
+    if(await application.evaluate(()=>globalThis.__qaQuitPromptCount===1)) break;
+    await new Promise(resolve=>setTimeout(resolve,20));
+  }
+  await application.evaluate(async()=>{await new Promise(resolve=>setImmediate(resolve));});
+  assert.equal(await page.locator('main').count(),1);
+  await application.evaluate(({dialog})=>{dialog.showMessageBox=async()=>({response:1});});
+  ended=application.waitForEvent('close'); await application.evaluate(({app})=>app.quit()); await ended; application=undefined;
+  console.log('PASS live-WAL legacy import and active-task quit/cancel choices');
+  const result={root,executable:executablePath||'development Electron',job:jobs[0].id,duration:jobs[0].duration};
+  writeFileSync('/tmp/shiyin-v06-desktop-result.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));
+} catch(error) { console.error(error); throw error; }
+finally { if(application) application.process().kill('SIGKILL'); }

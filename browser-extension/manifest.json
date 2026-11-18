@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "拾音 · 视频音频助手",
+  "version": "0.7.0",
+  "description": "将抖音和 B 站的视频或音频交给拾音保存。",
+  "action": { "default_title": "拾音 · 使用说明", "default_popup": "popup.html" },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.douyin.com/*",
+        "https://www.bilibili.com/video/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
