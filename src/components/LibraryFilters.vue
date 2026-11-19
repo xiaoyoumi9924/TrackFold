@@ -54,6 +54,8 @@ const active = computed(() =>
           <option value="m4a">M4A</option>
           <option value="flac">FLAC</option>
           <option value="wav">WAV</option>
+          <option value="opus">OPUS</option>
+          <option value="ogg">OGG</option>
         </select></label
       >
       <label

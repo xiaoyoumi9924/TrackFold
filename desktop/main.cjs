@@ -20,7 +20,23 @@ let child, window, origin = '', stopping = false, quitting = false, quitPending 
 let verificationWindow;
 const taskNotifications = new Set();
 const handoffs = createHandoffQueue({
-  canStart: () => !!origin && !!window && !importing && !quitting,
+  canStart: () => !!origin && !!window && !window.isDestroyed() && !importing && !quitting,
+  confirm: async key => {
+    const [kind, id, part] = key.split(':');
+    const source = kind.startsWith('bili-') ? 'B 站' : '抖音';
+    const media = kind.endsWith('video') ? '视频' : '音频';
+    reveal();
+    const { response } = await dialog.showMessageBox(window, {
+      type: 'question',
+      title: '来自浏览器的保存请求',
+      message: `保存这段${media}？`,
+      detail: `${source} · ${id}${part ? ` · 第 ${part} P` : ''}`,
+      buttons: ['取消', `保存${media}`],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    return response === 1;
+  },
   run: async key => {
     const [kind, id, part] = key.split(':');
     const bili = kind.startsWith('bili-');
@@ -40,7 +56,10 @@ const handoffs = createHandoffQueue({
 const replies = new Map();
 const token = randomBytes(32).toString('hex');
 const logFile = path.join(userData, 'desktop.log');
-function log(text) { fs.appendFileSync(logFile, `${new Date().toISOString()} ${text}\n`, { mode: 0o600 }); }
+function log(text) {
+  try { fs.appendFileSync(logFile, `${new Date().toISOString()} ${text}\n`, { mode: 0o600 }); }
+  catch { /* Logging cannot stop the desktop app when the data disk is unavailable. */ }
+}
 
 function startService(preferredPort = 0) {
   return new Promise((resolve, reject) => {
@@ -76,17 +95,30 @@ function startService(preferredPort = 0) {
       }
       if(message?.type==='qishui-verification') {
         try {
-          const url=new URL(message.url);
-          if(url.origin!==origin || !/^\/qishui-verify\/[a-f0-9-]{36}$/.test(url.pathname) || url.search || url.hash)return;
-          if(verificationWindow && !verificationWindow.isDestroyed()){
-            if(verificationWindow.webContents.getURL()!==url.href)await verificationWindow.loadURL(url.href);
-            verificationWindow.focus();return;
+          const url = new URL(message.url);
+          if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port ||
+              url.origin === origin || url.username || url.password || url.search || url.hash ||
+              !/^\/qishui-verify\/[a-f0-9-]{36}\/[A-Za-z0-9_-]{43}$/.test(url.pathname)) return;
+          if (verificationWindow && !verificationWindow.isDestroyed()) {
+            const current = verificationWindow.webContents.getURL();
+            if (current === url.href) { verificationWindow.focus(); return; }
+            verificationWindow.destroy();
           }
-          verificationWindow=new BrowserWindow({title:'汽水账号验证',parent:window,width:620,height:760,minWidth:480,minHeight:580,
-            backgroundColor:'#f5f6f2',webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,webviewTag:false}});
-          verificationWindow.on('closed',()=>{verificationWindow=undefined;});
-          verificationWindow.webContents.setWindowOpenHandler(()=>({action:'deny'}));
-          verificationWindow.webContents.on('will-navigate',(event,target)=>{if(new URL(target).origin!==origin)event.preventDefault();});
+          verificationWindow = new BrowserWindow({
+            title: '汽水账号验证', parent: window, width: 620, height: 760, minWidth: 480, minHeight: 580,
+            backgroundColor: '#f5f6f2',
+            webPreferences: {
+              partition: 'shiyin-qishui-verification',
+              nodeIntegration: false, contextIsolation: true, sandbox: true, webviewTag: false,
+            },
+          });
+          verificationWindow.on('closed', () => { verificationWindow = undefined; });
+          const contents = verificationWindow.webContents;
+          contents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+          contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+          contents.on('will-navigate', (event, target) => {
+            if (new URL(target).origin !== url.origin) event.preventDefault();
+          });
           await verificationWindow.loadURL(url.href);
         }catch{log('汽水验证窗口未能打开。');}
       }
@@ -291,7 +323,7 @@ function openExternal(url) {
 function acceptLink(raw) {
   try {
     const u = new URL(raw);
-    if (u.protocol !== 'shiyin-audio:' || !['douyin', 'bilibili'].includes(u.hostname) || !['/download', '/video'].includes(u.pathname) || u.hash || [...u.searchParams.keys()].some(k => !['id', ...(u.hostname === 'bilibili' ? ['p'] : [])].includes(k)) || u.searchParams.getAll('id').length !== 1) return;
+    if (u.protocol !== 'shiyin-audio:' || u.username || u.password || u.port || !['douyin', 'bilibili'].includes(u.hostname) || !['/download', '/video'].includes(u.pathname) || u.hash || [...u.searchParams.keys()].some(k => !['id', ...(u.hostname === 'bilibili' ? ['p'] : [])].includes(k)) || u.searchParams.getAll('id').length !== 1) return;
     const id = u.searchParams.get('id');
     if (u.hostname === 'bilibili') {
       const part = u.searchParams.get('p');
@@ -318,9 +350,11 @@ else {
     }
     powerMonitor.on('resume', shutdownTimer.check);
     session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-      if (origin && details.url.startsWith(origin + '/')) details.requestHeaders['X-Shiyin-Token'] = token;
-      if(origin && details.url.startsWith(origin+'/') && verificationWindow && !verificationWindow.isDestroyed() && details.webContentsId===verificationWindow.webContents.id)
-        details.requestHeaders['X-Shiyin-Verification']='1';
+      const fromApp = details.initiatorOrigin === origin ||
+        (!details.initiatorOrigin && details.resourceType === 'mainFrame');
+      if (origin && details.url.startsWith(origin + '/') && fromApp && window &&
+          !window.isDestroyed() && details.webContentsId === window.webContents.id)
+        details.requestHeaders['X-Shiyin-Token'] = token;
       callback({ requestHeaders: details.requestHeaders });
     });
     session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));

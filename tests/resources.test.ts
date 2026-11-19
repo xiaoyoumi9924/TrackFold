@@ -7,6 +7,7 @@ import {
   selectEquivalentChoice,
   platformFetch,
   resolveQishuiTrack,
+  resolveDouyin,
 } from "../server/providers.ts";
 const track = {
   id: "123",
@@ -105,6 +106,31 @@ test("account headers are not forwarded to a different origin during a redirect"
   assert.equal(requests[0].get("cookie"), "sessionid=test-only");
   assert.equal(requests[1].has("cookie"), false);
   assert.equal(requests[1].has("authorization"), false);
+});
+test("Douyin upgrades legacy share URLs and scopes the session Cookie to the video host", async (t) => {
+  const requests: { url: string; cookie: string | null }[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    requests.push({ url, cookie: new Headers(init.headers).get("cookie") });
+    const response = new Response(null);
+    Object.defineProperty(response, "url", { value: "https://www.douyin.com/video/1234567890123456789" });
+    return response;
+  });
+  const stop = async () => { throw new Error("Browser fallback reached"); };
+  await assert.rejects(resolveDouyin("http://www.douyin.com/video/1234567890123456789", "test-session", stop), /Browser fallback reached/);
+  await assert.rejects(resolveDouyin("http://v.douyin.com/short/", "test-session", stop), /Browser fallback reached/);
+  await assert.rejects(resolveDouyin("https://api.qishui.com/video/1234567890123456789", "test-session", stop), /抖音的视频分享链接/);
+  assert.deepEqual(requests, [
+    { url: "https://www.douyin.com/video/1234567890123456789", cookie: "test-session" },
+    { url: "https://v.douyin.com/short/", cookie: null },
+  ]);
+});
+test("platform fetch requires HTTPS for credentials while preserving public HTTP downloads", async (t) => {
+  const fetch = t.mock.method(globalThis, "fetch", async () => new Response("public"));
+  const url = "http://www.douyin.com/";
+  await assert.rejects(platformFetch(url, { headers: { Cookie: "test-session" } }), /HTTPS/);
+  await assert.rejects(platformFetch(url, { headers: { Authorization: "test-token" } }), /HTTPS/);
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(await (await platformFetch(url)).text(), "public");
 });
 test("authenticated lookup works when the share page has metadata but no player", async (t) => {
   const id = "7616760890513360923";

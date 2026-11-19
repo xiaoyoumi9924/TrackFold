@@ -210,3 +210,13 @@ test("汽水批次可选 500 首；停止后保留结果，重试不会重复解
   restored.cancel(batch.id);
   assert.deepEqual(calls, [tracks[0].id]);
 });
+
+test("a failed background checkpoint does not strand the batch", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const store = new Batches([], batch => {
+    if (batch.items.some(item => item.status === "resolving"))
+      throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+  }, async input => resource(input));
+  const batch = store.create(`${link("one")}\n${link("two")}`);
+  assert.deepEqual((await settled(store, batch.id)).items.map(item => item.status), ["ready", "ready"]);
+});

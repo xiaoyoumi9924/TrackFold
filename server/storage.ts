@@ -194,7 +194,7 @@ export async function publishAudio(
   readableName = false,
   beforePublish?: (file: { filename: string; filePath: string }) => void,
 ) {
-  if (!["mp3", "m4a", "flac", "wav", "mp4"].includes(extension))
+  if (!["mp3", "m4a", "flac", "wav", "opus", "ogg", "mp4"].includes(extension))
     throw new Error("输出格式无效。");
   existingDirectory(directory);
   const hidden = path.join(directory, `.shiyin-${randomUUID()}.part`);

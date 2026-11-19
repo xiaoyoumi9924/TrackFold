@@ -1,6 +1,6 @@
 {
   "name": "shiyin-local",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -23,7 +23,7 @@
     "qrcode": "^1.5.4",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "soda-decrypt": "latest",
+    "soda-decrypt": "1.0.0",
     "tsx": "^4.20.0",
     "vue": "^3.5.0"
   },

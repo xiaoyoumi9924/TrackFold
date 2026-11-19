@@ -64,7 +64,9 @@ export async function platformFetch(url: string, init: RequestInit = {}) {
   let headers = new Headers(init.headers);
   if (!headers.has("User-Agent")) headers.set("User-Agent", UA);
   for (let i = 0; i < 7; i++) {
-    allowedUrl(current);
+    const target = allowedUrl(current);
+    if (target.protocol === "http:" && (headers.has("Cookie") || headers.has("Authorization")))
+      throw new Error("登录信息只能通过 HTTPS 发送。");
     const r = await fetch(current, {
       ...init,
       redirect: "manual",
@@ -444,8 +446,12 @@ export async function resolveDouyin(
   cookie: string,
   browserResolve: (id: string) => Promise<any>,
 ): Promise<Plan> {
-  const r = await platformFetch(extractLink(input), {
-    headers: cookie ? { Cookie: cookie } : {},
+  const url = new URL(extractLink(input));
+  if (!/(^|\.)(douyin|iesdouyin)\.com$/.test(url.hostname))
+    throw new Error("请粘贴抖音的视频分享链接。");
+  url.protocol = "https:";
+  const r = await platformFetch(url.href, {
+    headers: cookie && url.hostname === "www.douyin.com" ? { Cookie: cookie } : {},
   });
   const id =
     r.url.match(/\/video\/(\d+)/)?.[1] ||

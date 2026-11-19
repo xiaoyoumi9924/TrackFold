@@ -11,6 +11,7 @@ import {
 } from "../server/library.ts";
 import { run, probe, convert, prepareArtwork } from "../server/media.ts";
 import type { Job, Resource } from "../shared/types.ts";
+import { actualExtension, originalAudioOutput, originalAudioNote } from "../shared/preferences.ts";
 
 const resource: Resource = {
   token: "new",
@@ -211,4 +212,58 @@ test("real media writes readable tags and attached artwork; precise clips have t
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("local original export replaces legacy lossy copies when source packets can be kept", () => {
+  const local = { ...resource, platform: "local" as const };
+  for (const [codec, extension] of [["pcm_s24le", "wav"], ["opus", "opus"], ["vorbis", "ogg"]]) {
+    const selection = { format: codec };
+    const old = { ...job, platform: local.platform, selection, filename: "old.m4a" };
+    const fresh = { ...old, id: "fresh", filename: `new.${extension}` };
+    assert.equal(findSaved([old], local, "original", selection, () => true), undefined);
+    assert.equal(findSaved([fresh, old], local, "original", selection, () => true), fresh);
+  }
+});
+
+test("original export preserves PCM, Opus and Vorbis packets and names the AAC fallback", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "shiyin-original-audio-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const signal = AbortSignal.timeout(30000);
+  const cases = [
+    { codec: "pcm_s24le", extension: "wav", bits: 24 },
+    { codec: "pcm_f32le", extension: "wav", bits: 32 },
+    { codec: "opus", extension: "opus", bits: 0 },
+    { codec: "vorbis", extension: "ogg", bits: 0 },
+  ];
+  const hash = (file: string) => run("ffmpeg", [
+    "-v", "error", "-i", file, "-map", "0:a:0", "-c:a", "copy", "-f", "hash", "-hash", "sha256", "-",
+  ], signal);
+  for (const { codec, extension, bits } of cases) {
+    const source = path.join(directory, `${codec}-source.${extension}`);
+    const output = path.join(directory, `${codec}-output.${actualExtension("original", codec)}`);
+    await run("ffmpeg", ["-v", "error", "-f", "lavfi", "-i",
+      "sine=frequency=513:sample_rate=48000:duration=2", "-ac", "2", "-c:a", codec, "-strict", "experimental", source], signal);
+    assert.equal(path.extname(output), "." + extension);
+    assert.equal(originalAudioOutput(codec).copy, true);
+    const result = await convert(source, output, extension, "保留音轨", 2, signal, () => {}, true);
+    assert.equal(result.codec, codec);
+    assert.equal(result.tags.title, "保留音轨");
+    assert.equal(await hash(output), await hash(source));
+    const stream = JSON.parse(await run("ffprobe", [
+      "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate,channels,bits_per_sample", "-of", "json", output,
+    ], signal)).streams[0];
+    assert.equal(stream.sample_rate, "48000");
+    assert.equal(stream.channels, 2);
+    assert.equal(stream.bits_per_sample, bits);
+  }
+
+  const explicitWav = path.join(directory, "explicit.wav");
+  assert.equal((await convert(path.join(directory, "pcm_s24le-source.wav"), explicitWav, "wav",
+    "剪辑素材", 2, signal, () => {})).codec, "pcm_s16le");
+
+  const aiff = path.join(directory, "source.aiff"), fallback = path.join(directory, "fallback.m4a");
+  await run("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "sine=duration=1", "-c:a", "pcm_s16be", aiff], signal);
+  assert.deepEqual(originalAudioOutput("pcm_s16be"), { extension: "m4a", copy: false });
+  assert.match(originalAudioNote("pcm_s16be"), /M4A（AAC 192 kbps）/);
+  assert.equal((await convert(aiff, fallback, "m4a", "输出提示", 1, signal, () => {}, true)).codec, "aac");
 });

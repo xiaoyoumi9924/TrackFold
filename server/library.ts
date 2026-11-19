@@ -6,6 +6,9 @@ import type {
   Resource,
 } from "../shared/types.ts";
 
+import { actualExtension } from "../shared/preferences.ts";
+import { fileFormat } from "../shared/library-filters.ts";
+
 export const libraryDefaults: LibrarySettings = {
   naming: "artist-title",
   embedCover: true,
@@ -87,12 +90,14 @@ export function findSaved(
   selection: Job["selection"],
   exists: (job: Job) => boolean,
 ) {
+  const localOriginal = format === "original" && resource.platform === "local" && selection?.format;
   return [...jobs]
     .reverse()
     .find(
       (job) =>
         job.status === "completed" &&
         sameSource(job, resource, format, selection) &&
+        (!localOriginal || fileFormat(job) === actualExtension("original", localOriginal)) &&
         exists(job),
     );
 }

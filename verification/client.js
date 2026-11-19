@@ -5,8 +5,7 @@ window.React = React;
 window.ReactDOM = ReactDOM;
 window.ucSecondVerifyReact = React;
 window.ucSecondVerifyReactDom = ReactDOM;
-const id = location.pathname.split("/").at(-1);
-const base = `/api/login/qishui/qr/${encodeURIComponent(id)}/verification`;
+const base = location.pathname + "/verification";
 const nativeFetch = window.fetch.bind(window);
 const status = document.querySelector("#status");
 const retry = document.querySelector("#retry");
@@ -212,7 +211,7 @@ async function start() {
         try {
           const view = await api("complete");
           setStatus(
-            view.qr?.phase === "confirmed"
+            view.phase === "confirmed"
               ? "验证已完成，请返回拾音查看账号状态。"
               : "验证已提交，请返回拾音等待汽水确认。",
           );

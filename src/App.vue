@@ -22,6 +22,7 @@ import LibraryWorkspace from "./components/LibraryWorkspace.vue";
 import LibraryGroupDialog from "./components/LibraryGroupDialog.vue";
 import { localBatch } from "./local-batch";
 import { fileFormat } from "../shared/library-filters";
+import { originalAudioNote } from "../shared/preferences";
 import { canBatchRetry } from "../shared/retry-policy";
 import {
   AudioLines,
@@ -1199,6 +1200,9 @@ onUnmounted(() => {
                   </div>
                 </div>
                 <p v-if="resource.videoAudioMode === 'combined'" class="format-note">{{ resource.note }}</p>
+                <p v-if="format === 'original'" class="format-note">
+                  {{ originalAudioNote(resource.platform === 'local' ? resource.choices[0]?.format : undefined) }}
+                </p>
                 <div class="resource-secondary">
                   <ExtractionDestination
                     :key="resource.token + recoveryJobId"

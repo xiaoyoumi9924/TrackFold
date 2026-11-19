@@ -11,6 +11,7 @@ import {
   ArrowDownToLine,
 } from "@lucide/vue";
 import type { Job, LibrarySettings, StorageSettings } from "../../shared/types";
+import { originalAudioNote } from "../../shared/preferences";
 import {
   localBatch as state,
   addLocalFiles,
@@ -348,6 +349,9 @@ defineExpose({ addFiles: add });
                 · {{ time(item.resource.duration) }} ·
                 {{ item.resource.choices[0]?.format?.toUpperCase() }}</template
               >
+            </p>
+            <p v-if="state.format === 'original' && item.phase === 'ready' && item.resource">
+              {{ originalAudioNote(item.resource.choices[0]?.format, state.organization.embedCover) }}
             </p>
           </div>
           <span class="local-file-status">{{ status(item) }}</span><button

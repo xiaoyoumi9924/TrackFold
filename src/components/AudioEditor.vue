@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { X, Scissors, Play, Square, LoaderCircle } from "@lucide/vue";
 import type { Job } from "../../shared/types";
+import { originalAudioNote } from "../../shared/preferences";
 const props = defineProps<{ job: Job; mode?: "clip" | "organize" }>();
 const emit = defineEmits<{ close: []; saved: [Job] }>();
 const dialog = ref<HTMLDialogElement>(),
@@ -21,6 +22,25 @@ const format = ref("mp3"),
   error = ref(""),
   playing = ref(false),
   waveformError = ref(false);
+const sourceCodec = ref<string>(), checkingCodec = ref(false), codecError = ref("");
+watch(format, async (selected, _, onCleanup) => {
+  if (!organizing || selected !== "original" || sourceCodec.value) return;
+  const controller = new AbortController();
+  onCleanup(() => { controller.abort(); checkingCodec.value = false; });
+  checkingCodec.value = true;
+  codecError.value = "";
+  try {
+    const response = await fetch(`/api/jobs/${encodeURIComponent(props.job.id)}/audio-codec`, { signal: controller.signal });
+    const result = await response.json();
+    if (!response.ok || typeof result.codec !== "string") throw new Error(result.error || "无法识别来源音轨。");
+    sourceCodec.value = result.codec;
+  } catch (cause) {
+    if (!controller.signal.aborted) codecError.value = (cause as Error).message;
+  } finally {
+    if (!controller.signal.aborted) checkingCodec.value = false;
+  }
+});
+const originalUnavailable = computed(() => format.value === "original" && (checkingCodec.value || !sourceCodec.value));
 const duration = ref(props.job.duration || 0);
 fadeOut.value = Math.min(0.5, duration.value / 4);
 const length = computed(() => end.value - start.value);
@@ -93,7 +113,7 @@ function loaded() {
   end.value = Math.min(end.value, duration.value);
 }
 async function save() {
-  if (invalid.value || busy.value) return;
+  if (invalid.value || busy.value || originalUnavailable.value) return;
   stop();
   busy.value = true;
   error.value = "";
@@ -257,6 +277,9 @@ onUnmounted(stop);
         </select></label
       >
     </div>
+    <p v-if="organizing && format === 'original'" class="editor-note" role="status">
+      {{ checkingCodec ? "正在检测来源音轨…" : codecError || originalAudioNote(sourceCodec) }}
+    </p>
     <p v-if="invalid" class="editor-issue" role="status">
       {{
         organizing
@@ -267,7 +290,7 @@ onUnmounted(stop);
     <p v-if="error" class="editor-issue" role="alert">{{ error }}</p>
     <footer>
       <span>保存到 {{ outputDir || "设置中的当前目录" }}</span>
-      <button class="primary" :disabled="busy || invalid" @click="save">
+      <button class="primary" :disabled="busy || invalid || originalUnavailable" @click="save">
         <LoaderCircle v-if="busy" :size="16" class="spin" /><Scissors
           v-else
           :size="16"

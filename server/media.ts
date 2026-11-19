@@ -6,6 +6,8 @@ import type { AudioMetadata, ClipRange } from "../shared/types.ts";
 import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import { platformFetch } from "./providers.ts";
+import { mediaProcessEnvironment } from "./media-environment.ts";
+import { originalAudioOutput, supportsAttachedCover } from "../shared/preferences.ts";
 export function run(
   command: string,
   args: string[],
@@ -21,6 +23,7 @@ export function run(
           ? process.env.SHIYIN_FFPROBE_PATH || command
           : command;
     const p = spawn(executable, args, {
+      env: command === "ffmpeg" || command === "ffprobe" ? mediaProcessEnvironment() : undefined,
       signal,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
@@ -128,20 +131,16 @@ export async function convert(
   } = {},
 ) {
   const info = await probe(input, signal);
+  const original = originalAudioOutput(info.codec);
+  const copy = !options.clip && !options.loudnessFilter && original.copy &&
+    original.extension === format && (preserve || format === "m4a");
   let codec: string[];
-  if (format === "wav") codec = ["-c:a", "pcm_s16le"];
-  else if (
-    preserve &&
-    !options.clip && !options.loudnessFilter &&
-    ((format === "mp3" && info.codec === "mp3") ||
-      (format === "flac" && info.codec === "flac"))
-  )
-    codec = ["-c:a", "copy"];
+  if (copy) codec = ["-c:a", "copy"];
+  else if (format === "wav") codec = ["-c:a", "pcm_s16le"];
   else if (format === "mp3") codec = ["-c:a", "libmp3lame", "-q:a", "2"];
   else if (format === "flac") codec = ["-c:a", "flac"];
-  else if (!options.clip && !options.loudnessFilter && ["aac", "alac"].includes(info.codec))
-    codec = ["-c:a", "copy"];
-  else codec = ["-c:a", "aac", "-b:a", "192k"];
+  else if (format === "m4a") codec = ["-c:a", "aac", "-b:a", "192k"];
+  else throw new Error("此音轨无法按所选原声格式直接复制。");
   const filters: string[] = [];
   if (options.clip) {
     const c = options.clip;
@@ -154,7 +153,7 @@ export async function convert(
   }
   if (options.loudnessFilter) filters.push(options.loudnessFilter);
   const metadata = options.metadata || { title, artist: "" };
-  const artwork = options.artwork && format !== "wav";
+  const artwork = options.artwork && supportsAttachedCover(format);
   await run(
     "ffmpeg",
     [

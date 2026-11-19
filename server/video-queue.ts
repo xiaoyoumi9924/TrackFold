@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { VideoTask } from "../shared/types.ts";
 import type { VideoPlan } from "./video.ts";
+import { reportLocalFailure } from "./temporary-media.ts";
 
 type VideoRequest = { input: string; outputDir: string };
 type WaitingVideo = VideoRequest & { task: VideoTask; plan?: VideoPlan };
@@ -26,7 +27,7 @@ export class VideoQueue {
     for (const record of records) {
       const { task } = record;
       this.restoreRecord(record);
-      if (task.status === "queued" || task.status === "working") this.interrupt(task);
+      if (task.status === "queued" || task.status === "working") this.interruptSafely(task);
     }
   }
 
@@ -63,10 +64,7 @@ export class VideoQueue {
       title: sourceId ? `抖音视频 ${sourceId}` : undefined,
       ...plan?.metadata,
     };
-    const request = { input: clean, outputDir };
-    this.tasks.set(task.id, task);
-    this.requests.set(task.id, request);
-    return this.enqueue({ task, ...request, plan });
+    return this.enqueue({ task, input: clean, outputDir, plan });
   }
 
   retry(id: string) {
@@ -75,11 +73,9 @@ export class VideoQueue {
     if (task?.status !== "failed" || !request) throw new Error("此视频任务无法重试，请重新解析链接。");
     if (this.inFlight.has(request.input)) throw new Error("该视频已有任务正在处理，请稍后再试。");
     this.checkCapacity();
-    task.status = "queued";
-    task.message = "等待处理";
-    task.progress = undefined;
-    task.needsReview = undefined;
-    return this.enqueue({ task, ...request });
+    return this.enqueue({ task, ...request }, {
+      status: "queued", message: "等待处理", progress: undefined, needsReview: undefined,
+    });
   }
 
   request(id: string) { return this.requests.get(id); }
@@ -129,13 +125,20 @@ export class VideoQueue {
     this.save(task);
   }
 
+  private interruptSafely(task: VideoTask) {
+    try { this.interrupt(task); } catch (error) { reportLocalFailure("未能保存视频中断状态", error); }
+  }
+
   private checkCapacity() {
     if (this.stopped) throw new Error("拾音正在退出。");
     if (this.waiting.length >= 100) throw new Error("视频排队数量已满，请等待任务完成。");
   }
 
-  private enqueue(item: WaitingVideo) {
-    this.save(item.task);
+  private enqueue(item: WaitingVideo, changes?: Partial<VideoTask>) {
+    const { task, input, outputDir } = item;
+    this.persist({ task: changes ? { ...task, ...changes } : task, input, outputDir });
+    if (changes) Object.assign(task, changes);
+    this.restoreRecord(item);
     this.inFlight.set(item.input, item.task);
     this.waiting.push(item);
     queueMicrotask(() => this.drain());
@@ -144,27 +147,16 @@ export class VideoQueue {
 
   private drain() {
     while (!this.stopped && !this.paused && this.active < this.concurrency && this.waiting.length) {
-      const { task, input, outputDir, plan } = this.waiting.shift()!;
+      const item = this.waiting.shift()!;
+      const { task, input } = item;
       this.active++;
       task.status = "working";
-      task.message = plan ? "正在准备下载…" : "正在解析链接…";
-      this.save(task);
+      task.message = item.plan ? "正在准备下载…" : "正在解析链接…";
       const controller = new AbortController();
       this.controllers.set(task.id, controller);
-      const work = this.process(task, input, outputDir, plan, controller.signal).catch(error => {
-        if (task.status === "cancelled") return;
-        task.status = "failed";
-        task.message = error instanceof Error ? error.message : "处理失败。";
+      const work = this.run(item, controller.signal).catch(error => {
+        reportLocalFailure("未能保存视频任务状态", error);
       }).finally(() => {
-        if (task.status !== "completed" && controller.signal.aborted) {
-          if (task.status !== "cancelled") this.interrupt(task);
-        } else {
-          if (task.status === "completed") {
-            task.interrupted = undefined;
-            task.needsReview = undefined;
-          }
-          this.save(task);
-        }
         this.controllers.delete(task.id);
         this.inFlight.delete(input);
         this.active--;
@@ -175,11 +167,32 @@ export class VideoQueue {
     }
   }
 
+  private async run({ task, input, outputDir, plan }: WaitingVideo, signal: AbortSignal) {
+    try {
+      this.save(task);
+      await this.process(task, input, outputDir, plan, signal);
+    } catch (error) {
+      if (task.status !== "cancelled") {
+        task.status = "failed";
+        task.message = error instanceof Error ? error.message : "处理失败。";
+      }
+    }
+    if (task.status !== "completed" && signal.aborted) {
+      if (task.status !== "cancelled") this.interrupt(task);
+      return;
+    }
+    if (task.status === "completed") {
+      task.interrupted = undefined;
+      task.needsReview = undefined;
+    }
+    this.save(task);
+  }
+
   stop() {
     this.stopped = true;
     for (const { task, input } of this.waiting.splice(0)) {
       this.inFlight.delete(input);
-      this.interrupt(task);
+      this.interruptSafely(task);
     }
     for (const controller of this.controllers.values()) controller.abort();
     return Promise.allSettled(this.running);

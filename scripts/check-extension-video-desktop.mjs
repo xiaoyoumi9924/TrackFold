@@ -4,12 +4,13 @@ import { mkdtempSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 const root = mkdtempSync(path.join(os.tmpdir(), 'shiyin-handoff-'));
-const exe = path.resolve(process.env.SHIYIN_TEST_EXECUTABLE || 'release/unified-runtime/mac-arm64/拾音.app/Contents/MacOS/拾音');
-const app = await _electron.launch({ executablePath: exe, env: { ...process.env, SHIYIN_DESKTOP_DATA_DIR: path.join(root, 'profile'), SHIYIN_DESKTOP_OUTPUT_DIR: path.join(root, 'output') }, timeout: 45000 });
+const exe = process.env.SHIYIN_TEST_EXECUTABLE;
+const app = await _electron.launch({ ...(exe ? { executablePath: path.resolve(exe) } : { args: ['.'] }), env: { ...process.env, SHIYIN_DESKTOP_DATA_DIR: path.join(root, 'profile'), SHIYIN_DESKTOP_OUTPUT_DIR: path.join(root, 'output') }, timeout: 45000 });
 try {
   await app.firstWindow();
-  await app.evaluate(({app}) => {
+  await app.evaluate(({ app, dialog }) => {
     globalThis.testHandoffs = [];
+    dialog.showMessageBox = async () => ({ response: 1 });
     globalThis.fetch = async (url, options) => { globalThis.testHandoffs.push({ path: new URL(url).pathname, body: JSON.parse(options.body) }); return { ok: true, json: async () => ({}) }; };
     const emit = url => app.emit('open-url', { preventDefault() {} }, url);
     emit('shiyin-audio://douyin/download?id=1111111111111111111');

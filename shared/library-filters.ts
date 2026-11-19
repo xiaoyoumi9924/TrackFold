@@ -5,7 +5,7 @@ export interface LibraryFilters {
   kind: "all" | "full" | "preview" | "clip" | "unknown" | "stem" | "normalized";
   platform: "all" | Platform;
   file: "all" | "available" | "missing";
-  format: "all" | "mp3" | "m4a" | "flac" | "wav";
+  format: "all" | "mp3" | "m4a" | "flac" | "wav" | "opus" | "ogg";
   favoriteOnly: boolean;
   group: string;
   sort: "newest" | "oldest" | "title" | "artist";

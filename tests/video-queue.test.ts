@@ -61,3 +61,16 @@ test('video history keeps completed outputs and only restores jobs interrupted b
   assert.equal(next.tasks.get(interrupted.id)?.interrupted, undefined);
   assert.throws(() => next.retry(cancelled.id), /无法重试/);
 });
+
+test('a failed video checkpoint releases the queue slot and continues', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  const queue = new VideoQueue(async task => { task.status = 'completed'; }, 1, [], ({ task, input }) => {
+    if (input === 'first' && task.status !== 'queued') throw new Error('disk unavailable');
+  });
+  const first = queue.add('first', '/output');
+  const second = queue.add('second', '/output');
+  await tick();
+  assert.equal(first.status, 'failed');
+  assert.equal(second.status, 'completed');
+  assert.equal(queue.busy, false);
+});

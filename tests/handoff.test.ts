@@ -12,6 +12,7 @@ test('browser handoffs run different videos concurrently, deduplicate and contin
   let ready = false;
   const q = createHandoffQueue({
     canStart: () => ready,
+    confirm: () => true,
     concurrency: 2,
     run: (id: string) => { started.push(id); return new Promise((resolve, fail) => { finish.set(id, resolve); reject.set(id, fail); }); },
     onError: (_error: Error, id: string) => failed.push(id),
@@ -29,4 +30,38 @@ test('browser handoffs run different videos concurrently, deduplicate and contin
   assert.equal(q.add('a'), true);
   await tick(); assert.deepEqual(started, ['a', 'b', 'c', 'a']);
   finish.get('a')!(); await tick();
+});
+
+test('browser handoffs wait for one confirmation at a time and bound the pending queue', async () => {
+  const shown: string[] = [], started: string[] = [];
+  const answer = new Map<string, (confirmed: boolean) => void>();
+  const queue = createHandoffQueue({
+    canStart: () => true,
+    maxPending: 2,
+    confirm: (id: string) => {
+      shown.push(id);
+      return new Promise<boolean>(resolve => answer.set(id, resolve));
+    },
+    run: (id: string) => started.push(id),
+    onError: (error: Error) => assert.fail(error.message),
+  });
+  assert.equal(queue.add('a'), true);
+  assert.equal(queue.add('b'), true);
+  assert.equal(queue.add('c'), false);
+  assert.equal(queue.add('a'), false);
+  await tick();
+  assert.deepEqual(shown, ['a']);
+  assert.deepEqual(started, []);
+  answer.get('a')!(false);
+  await tick();
+  assert.deepEqual(shown, ['a', 'b']);
+  assert.deepEqual(started, []);
+  assert.equal(queue.add('c'), true);
+  answer.get('b')!(true);
+  await tick();
+  assert.deepEqual(started, ['b']);
+  assert.deepEqual(shown, ['a', 'b', 'c']);
+  answer.get('c')!(false);
+  await tick();
+  assert.deepEqual(started, ['b']);
 });

@@ -1,22 +1,40 @@
-// Keep accepted IDs distinct while allowing unrelated videos to resolve together.
-function createHandoffQueue({ run, onError, canStart, concurrency = 2 }) {
+// Ask about one request at a time. Accepted downloads can still resolve concurrently.
+function createHandoffQueue({ confirm, run, onError, canStart, concurrency = 2, maxPending = 10 }) {
   const waiting = [];
   const pending = new Set();
   let active = 0;
-  function drain() {
-    while (canStart() && active < concurrency && waiting.length) {
-      const id = waiting.shift();
-      active++;
-      Promise.resolve().then(() => run(id)).catch(error => onError(error, id)).finally(() => {
-        active--;
-        pending.delete(id);
-        drain();
-      });
+  let confirming = false;
+
+  async function confirmAndRun(id) {
+    let accepted;
+    try {
+      accepted = await confirm(id);
+    } finally {
+      confirming = false;
     }
+    if (!accepted || !canStart()) return;
+
+    active++;
+    drain();
+    try {
+      await run(id);
+    } finally {
+      active--;
+    }
+  }
+
+  function drain() {
+    if (confirming || !canStart() || active >= concurrency || !waiting.length) return;
+    const id = waiting.shift();
+    confirming = true;
+    void confirmAndRun(id).catch(error => onError(error, id)).finally(() => {
+      pending.delete(id);
+      drain();
+    });
   }
   return {
     add(id) {
-      if (pending.has(id)) return false;
+      if (pending.has(id) || pending.size >= maxPending) return false;
       pending.add(id);
       waiting.push(id);
       drain();

@@ -33,8 +33,30 @@ export function titlePart(title: string) {
   }
   return result;
 }
+const wavCopyCodecs = new Set([
+  "pcm_u8", "pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_s64le", "pcm_f32le", "pcm_f64le",
+  "pcm_alaw", "pcm_mulaw", "adpcm_ms", "adpcm_ima_wav",
+]);
+const sourceContainers = new Map([
+  ["mp3", "mp3"], ["flac", "flac"], ["aac", "m4a"], ["alac", "m4a"],
+  ["opus", "opus"], ["vorbis", "ogg"],
+]);
+export const originalTranscodeNote = "此音轨将转码为 M4A（AAC 192 kbps）。";
+export function originalAudioOutput(sourceCodec?: string) {
+  const codec = sourceCodec?.toLowerCase() || "";
+  const direct = wavCopyCodecs.has(codec) ? "wav" : sourceContainers.get(codec);
+  return { extension: direct || "m4a", copy: !!direct };
+}
 export function actualExtension(format: string, sourceFormat?: string) {
-  if (format !== "original") return format;
-  const codec = sourceFormat?.toLowerCase();
-  return codec === "flac" || codec === "mp3" ? codec : "m4a";
+  return format === "original" ? originalAudioOutput(sourceFormat).extension : format;
+}
+export function supportsAttachedCover(extension: string) {
+  return ["mp3", "m4a", "flac"].includes(extension);
+}
+export function originalAudioNote(codec?: string, embedCover = false) {
+  if (!codec) return "保存时检测实际音轨，无法直接复制时将转码为 M4A（AAC 192 kbps）。";
+  const output = originalAudioOutput(codec);
+  if (!output.copy) return originalTranscodeNote;
+  const cover = embedCover && !supportsAttachedCover(output.extension) ? " 此格式的导出文件不附带封面。" : "";
+  return `输出为 ${output.extension.toUpperCase()}，原样复制音轨。${cover}`;
 }

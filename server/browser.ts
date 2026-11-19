@@ -53,6 +53,7 @@ async function applyCookie(c: BrowserContext, cookie: string) {
         value,
         domain: ".douyin.com",
         path: "/",
+        secure: true,
       })),
   );
 }

@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { access, mkdir, copyFile, chmod, writeFile, readFile, rm } from 'node:fs/promises';
+import { access, mkdir, copyFile, chmod, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
@@ -10,10 +10,14 @@ const sourceDir = mediaDirectories[target];
 const suffix = target === 'win32' ? '.exe' : '';
 const native = target === process.platform && process.arch === (target === 'darwin' ? 'arm64' : 'x64');
 const tools = ['ffmpeg', 'ffprobe'];
+const ffmpegVersion = '6.1.6';
+const ffmpegArchive = `ffmpeg-${ffmpegVersion}.tar.xz`;
 try {
+  const builtVersion = (await readFile(path.join(sourceDir, 'ffmpeg-version.txt'), 'utf8')).trim();
+  if (builtVersion !== ffmpegVersion) throw new Error(`需要 FFmpeg ${ffmpegVersion}，当前是 ${builtVersion}。`);
   await Promise.all(tools.map(name => access(path.join(sourceDir, name + suffix))));
 } catch (cause) {
-  throw new Error(`缺少 ${target} 媒体组件。请先运行 sh scripts/build-media.sh ${target}。`, { cause });
+  throw new Error(`缺少 ${target} 的 FFmpeg ${ffmpegVersion} 媒体组件。请先运行 sh scripts/build-media.sh ${target}。`, { cause });
 }
 await mkdir('desktop-build/bin', { recursive: true });
 await mkdir('desktop-build/licenses', { recursive: true });
@@ -34,6 +38,8 @@ for (const name of tools) {
   for (const kind of ['license', 'build', 'libraries'])
     await rm(`desktop-build/licenses/${name}-${kind}.txt`, { force: true });
   if (native) {
+    if (inspect(source, ['-version']).split(/\s+/)[2] !== ffmpegVersion)
+      throw new Error(`${name} 版本与打包源码不一致，请重新构建媒体组件。`);
     const license = inspect(source, ['-L']);
     if (!/LGPL|Lesser General Public License/i.test(license) || /not legally redistributable|nonfree parts/i.test(license))
       throw new Error(`${name} 构建不是可分发的 LGPL 版本。`);
@@ -57,14 +63,18 @@ for (const name of tools) {
 }
 await copyFile(path.join(sourceDir, 'COPYING.LGPLv2.1'), 'desktop-build/licenses/COPYING.LGPLv2.1');
 await copyFile(path.join(sourceDir, 'LAME-COPYING'), 'desktop-build/licenses/LAME-COPYING');
-await copyFile('vendor/sources/ffmpeg-6.1.1.tar.xz', 'desktop-build/licenses/sources/ffmpeg-6.1.1.tar.xz');
+const bundledSources = 'desktop-build/licenses/sources';
+for (const file of await readdir(bundledSources))
+  if (/^ffmpeg-[\d.]+\.tar\.xz$/.test(file) && file !== ffmpegArchive)
+    await rm(path.join(bundledSources, file), { force: true });
+await copyFile(path.join('vendor/sources', ffmpegArchive), path.join(bundledSources, ffmpegArchive));
 await copyFile('vendor/sources/lame-3.100.tar.gz', 'desktop-build/licenses/sources/lame-3.100.tar.gz');
 await copyFile('scripts/build-media.sh', 'desktop-build/licenses/build-media.sh');
 const pkg = JSON.parse(await readFile('package.json', 'utf8'));
 await writeFile('desktop-build/licenses/README.txt', [
   '# 拾音桌面版组件', '',
-  'FFmpeg / FFprobe 6.1.1 采用 LGPL-2.1-or-later，未启用 GPL 或 nonfree。',
-  'FFmpeg 源码：https://ffmpeg.org/releases/ffmpeg-6.1.1.tar.xz',
+  `FFmpeg / FFprobe ${ffmpegVersion} 采用 LGPL-2.1-or-later，未启用 GPL 或 nonfree。`,
+  `FFmpeg 源码：https://ffmpeg.org/releases/${ffmpegArchive}`,
   'LAME 3.100 / LGPL-2.0-or-later：https://sourceforge.net/projects/lame/files/lame/3.100/',
   `构建命令：sh build-media.sh ${target}`, '',
   `Electron ${pkg.devDependencies.electron} / MIT，完整说明见发行包中的 Electron 和 Chromium 许可文件。`, '',

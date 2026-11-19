@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import path from "node:path";
 import os from "node:os";
 import { run } from "./media.ts";
+import { mediaProcessEnvironment } from "./media-environment.ts";
 
 const model = "UVR-MDX-NET-Inst_HQ_3.onnx";
 const expectedHash = "317554b07fe1ea5279a77f2b1520a41ea4b93432560c4ffd08792c30fddf9adc";
@@ -27,6 +28,15 @@ export function separationRuntime() {
   return { directory, python, models, modelPath, metadataPath, runtimePresent, modelPresent, metadataPresent,
     available: runtimePresent && modelPresent && metadataPresent };
 }
+function separationEnvironment() {
+  const env = mediaProcessEnvironment();
+  if (process.platform !== "win32") env.PATH ||= "/usr/bin:/bin";
+  const ffmpeg = process.env.SHIYIN_FFMPEG_PATH;
+  if (ffmpeg) env.PATH = [path.dirname(ffmpeg), env.PATH].filter(Boolean).join(path.delimiter);
+  env.PYTHONUNBUFFERED = "1";
+  return env;
+}
+
 export async function checkSeparationRuntime() {
   const runtime = separationRuntime();
   const details = {
@@ -54,7 +64,7 @@ export async function checkSeparationRuntime() {
     return { available: false, state: "error", details, message: "模型或配置无法读取，请重新检查本机组件。" };
   }
   try {
-    await promisify(execFile)(runtime.python, ["-c", "from audio_separator.utils.cli import main; from audio_separator.separator import Separator; import onnxruntime"], { timeout: 30000, maxBuffer: 1024 * 1024 });
+    await promisify(execFile)(runtime.python, ["-c", "from audio_separator.utils.cli import main; from audio_separator.separator import Separator; import onnxruntime"], { env: separationEnvironment(), timeout: 30000, maxBuffer: 1024 * 1024 });
     details.runtime = "可用";
     return { available: true, state: "available", details, message: "人声分离可用。" };
   } catch {
@@ -96,12 +106,6 @@ export async function separate(
     ],
     signal,
   );
-  const ffmpeg = process.env.SHIYIN_FFMPEG_PATH;
-  const env = {
-    ...process.env,
-    PATH: `${ffmpeg ? path.dirname(ffmpeg) + path.delimiter : ""}${process.env.PATH || "/usr/bin:/bin"}`,
-    PYTHONUNBUFFERED: "1",
-  };
   const args = [
     "-c",
     "from audio_separator.utils.cli import main; main()",
@@ -119,7 +123,7 @@ export async function separate(
   ];
   await new Promise<void>((resolve, reject) => {
     const child = spawn(runtime.python, args, {
-      env,
+      env: separationEnvironment(),
       signal,
       stdio: ["ignore", "ignore", "pipe"],
     });

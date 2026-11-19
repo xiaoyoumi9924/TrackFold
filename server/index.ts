@@ -1,13 +1,13 @@
 import { associateBackupFiles, checkedMediaFile, readBackup, type RecordsBackup } from "./backup.ts";
-import { actualExtension, type ExportPreset } from "../shared/preferences.ts";
+import { actualExtension, originalAudioOutput, originalTranscodeNote, supportsAttachedCover, type ExportPreset } from "../shared/preferences.ts";
 import express from "express";
 import { isBilibiliLink, resolveBilibiliAudio, resolveVideo, saveVideo, videoErrorMessage, videoSourceUrl, type VideoPlan } from "./video.ts";
 import { BilibiliLogin, inspectBilibili } from "./bilibili-login.ts";
 import { VideoQueue, type VideoRecord } from "./video-queue.ts";
 import multer from "multer";
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, existsSync, lstatSync, statSync, readFileSync, writeFileSync, renameSync } from "node:fs";
-import { unlink, lstat, mkdtemp, rm } from "node:fs/promises";
+import { mkdirSync, mkdtempSync, existsSync, lstatSync, statSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { lstat, mkdtemp } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { AccountPlatform, Batch, Job, Resource, AudioQueueState, RecoveryItem, VideoMetadata, VideoTask } from "../shared/types.ts";
@@ -52,7 +52,7 @@ import {
 } from "./browser.ts";
 import { AccountStore, normalizeCookie } from "./accounts.ts";
 import { QishuiLogin } from "./qishui-login.ts";
-import { verificationCsp, verificationHtml } from "./qishui-verification.ts";
+import { createVerificationServer } from "./verification-server.ts";
 import { readLocalQishuiCookie } from "./local-account.ts";
 import {
   libraryDefaults,
@@ -65,13 +65,15 @@ import {
 } from "./library.ts";
 import { probe, convert, download, run, prepareArtwork } from "./media.ts";
 import { desktopOpenPath, parentPort, openVerificationWindow } from "./desktop-bridge.ts";
+import { clearStaleMedia, removeTemporary, reportLocalFailure } from "./temporary-media.ts";
 
 const root = process.env.SHIYIN_APP_ROOT || process.cwd(),
   local = process.env.SHIYIN_DATA_DIR || path.join(root, ".local"),
-  temp = path.join(local, "temp"),
+  tempRoot = path.join(local, "temp"),
   legacyOutput = process.env.SHIYIN_OUTPUT_DIR || path.join(root, "output");
-for (const d of [local, temp, legacyOutput])
+for (const d of [local, tempRoot, legacyOutput])
   mkdirSync(d, { recursive: true, mode: 0o700 });
+const temp = mkdtempSync(path.join(tempRoot, `run-${process.pid}-`));
 const storage = new OutputStorage(local, legacyOutput);
 let organization = { ...libraryDefaults };
 try {
@@ -86,6 +88,22 @@ db.exec(
 db.exec(`CREATE TABLE IF NOT EXISTS video_jobs (id TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS pending_outputs (id TEXT PRIMARY KEY, value TEXT NOT NULL);`);
 db.exec("CREATE TABLE IF NOT EXISTS export_presets (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
+function storedRecords<T>(table: "jobs" | "video_jobs" | "batches", valid: (value: any, id: unknown) => boolean): T[] {
+  const records: T[] = [];
+  for (const row of db.prepare(`SELECT id, value FROM ${table} ORDER BY rowid`).all()) {
+    try {
+      const record = JSON.parse(String(row.value));
+      if (!valid(record, row.id)) throw new Error("Invalid record");
+      records.push(record);
+    } catch (error) {
+      reportLocalFailure(`已跳过 ${table} 中的损坏记录，数据库原记录已保留`, error);
+    }
+  }
+  return records;
+}
+function validRecordId(id: unknown) {
+  return typeof id === "string" && /^[a-z0-9_-]{1,128}$/i.test(id);
+}
 function customPresets() {
   return db.prepare("SELECT value FROM export_presets ORDER BY rowid").all().map(row => JSON.parse(String(row.value)) as ExportPreset);
 }
@@ -101,7 +119,20 @@ function prepareOutput(id: string, file: PublishedCandidate) {
 async function recoverOutput(id: string): Promise<PublishedCandidate | undefined> {
   const row = readPendingOutput.get(id);
   if (!row) return;
-  const file = JSON.parse(String(row.value)) as PublishedCandidate;
+  let file: PublishedCandidate;
+  try {
+    const saved = JSON.parse(String(row.value));
+    if (typeof saved?.filePath !== "string" || typeof saved.filename !== "string" ||
+        typeof saved.checksum !== "string" || !/^[a-f0-9]{64}$/.test(saved.checksum))
+      throw new Error("Invalid pending output");
+    const { filename, filePath, checksum, size, duration } = saved;
+    file = { filename, filePath, checksum };
+    if (Number.isFinite(size)) file.size = size;
+    if (Number.isFinite(duration)) file.duration = duration;
+  } catch (error) {
+    reportLocalFailure("已跳过损坏的待恢复文件记录", error);
+    return;
+  }
   try {
     if ((await lstat(file.filePath)).isFile() && await checksum(file.filePath) === file.checksum) return file;
   } catch { /* The destination may be temporarily disconnected. */ }
@@ -109,9 +140,10 @@ async function recoverOutput(id: string): Promise<PublishedCandidate | undefined
 function interruptedAudio(job: Job, message = "上次未完成，可在任务页继续。") {
   patch(job, { status: "failed", interrupted: true, failureKind: undefined, message, progress: 0 });
 }
+let closing = false;
 async function restoreAudioOutput(job: Job) {
   const existing = await recoverOutput(job.id);
-  if (!existing) return false;
+  if (!existing || closing || job.status === "cancelled") return false;
   patch(job, { ...existing, status: "completed", interrupted: undefined, needsReview: undefined,
     completedAt: new Date().toISOString(), progress: 100, message: "已找回上次保存的音频。" });
   return true;
@@ -124,46 +156,55 @@ try {
   const stored = JSON.parse(readFileSync(notificationFile, "utf8"));
   notificationsEnabled = stored.enabled === true || stored.mode === "batch" || stored.mode === "failures";
 } catch {}
-for (const row of db.prepare("SELECT value FROM jobs").all()) {
-  const job = JSON.parse(String(row.value)) as Job;
-  // Old records always belong to their original output folder, never the new preference.
-  job.outputDir ||= legacyOutput;
-  if (job.status === "completed") job.filePath ||= jobFile(job, legacyOutput);
-  if (job.message === "应用已退出，可重新解析后再试。" || job.message === "上次任务被中断，请重新解析后再试。")
-    interruptedAudio(job);
-  if (!["completed", "failed", "cancelled"].includes(job.status) || job.interrupted) {
-    if (await restoreAudioOutput(job)) continue;
-    if (!job.interrupted) interruptedAudio(job);
+const audioRecords = storedRecords<Job>("jobs", (job, id) => validRecordId(id) && job?.id === id &&
+  typeof job.title === "string" && typeof job.artist === "string" &&
+  ["queued", "downloading", "processing", "checking", "completed", "failed", "cancelled"].includes(job.status) &&
+  [job.filePath, job.outputDir, job.filename].every(value => value == null || typeof value === "string"));
+for (const job of audioRecords) {
+  try {
+    // Old records always belong to their original output folder, never the new preference.
+    job.outputDir ||= legacyOutput;
+    if (job.status === "completed") job.filePath ||= jobFile(job, legacyOutput);
+    if (job.message === "应用已退出，可重新解析后再试。" || job.message === "上次任务被中断，请重新解析后再试。")
+      interruptedAudio(job);
+    if (!["completed", "failed", "cancelled"].includes(job.status) || job.interrupted) {
+      if (await restoreAudioOutput(job)) continue;
+      if (!job.interrupted) interruptedAudio(job);
+    }
+    jobs.set(job.id, job);
+    if (
+      job.status === "completed" &&
+      job.filePath &&
+      !job.checksum &&
+      existsSync(job.filePath)
+    ) {
+      try {
+        job.checksum = await checksum(job.filePath);
+      } catch {}
+    }
+    save(job);
+  } catch (error) {
+    jobs.set(job.id, job);
+    reportLocalFailure("无法更新已读取的音频任务", error);
   }
-  jobs.set(job.id, job);
-  if (
-    job.status === "completed" &&
-    job.filePath &&
-    !job.checksum &&
-    existsSync(job.filePath)
-  ) {
-    try {
-      job.checksum = await checksum(job.filePath);
-    } catch {}
-  }
-  save(job);
 }
-function save(job: Job) {
-  jobs.set(job.id, job);
+function save(job: Job, changes?: Partial<Job>) {
   db.prepare("INSERT OR REPLACE INTO jobs(id,value) VALUES (?,?)").run(
     job.id,
-    JSON.stringify(job),
+    JSON.stringify(changes ? { ...job, ...changes } : job),
   );
+  if (changes) Object.assign(job, changes);
+  jobs.set(job.id, job);
   if (job.status === "completed" || job.status === "cancelled") clearPendingOutput.run(job.id);
   completionTracker?.observe(job);
 }
 const plans = new Map<string, Plan>();
+const claimedUploads = new Map<string, Plan>();
 const controllers = new Map<string, AbortController>();
 const queue: { job: Job; plan: Plan; choice: string }[] = [];
 const audioQueueLimit = 10;
 let active = 0;
 let queuePaused = false;
-let closing = false;
 const running = new Set<Promise<void>>();
 const videoPreviews = new Map<string, { plan: VideoPlan; input: string; expires: number }>();
 const resolvingVideo = new Map<string, Promise<VideoPlan>>();
@@ -173,12 +214,15 @@ function readVideoPlan(input: string, expected?: VideoMetadata) {
 }
 async function restoreVideoOutput(task: VideoTask) {
   const existing = await recoverOutput(task.id);
-  if (!existing) return false;
+  if (!existing || closing || task.status === "cancelled") return false;
   Object.assign(task, { filePath: existing.filePath, checksum: existing.checksum, status: "completed", interrupted: undefined,
     needsReview: undefined, message: "已找回上次保存的视频。", progress: undefined });
   return true;
 }
-const videoRecords = db.prepare("SELECT value FROM video_jobs ORDER BY rowid").all().map(row => JSON.parse(String(row.value)) as VideoRecord);
+const videoRecords = storedRecords<VideoRecord>("video_jobs", (record, id) => validRecordId(id) &&
+  record?.task?.id === id && ["queued", "working", "completed", "failed", "cancelled"].includes(record.task.status) &&
+  typeof record.input === "string" && typeof record.outputDir === "string" &&
+  (record.task.filePath == null || typeof record.task.filePath === "string"));
 for (const { task } of videoRecords) {
   if (task.interrupted || task.status === "queued" || task.status === "working") await restoreVideoOutput(task);
 }
@@ -187,7 +231,9 @@ function saveVideoRecord(record: VideoRecord) {
   videoUpsert.run(record.task.id, JSON.stringify(record));
   if (["completed", "cancelled"].includes(record.task.status)) clearPendingOutput.run(record.task.id);
 }
-for (const record of videoRecords) if (record.task.status === "completed") saveVideoRecord(record);
+for (const record of videoRecords) if (record.task.status === "completed") {
+  try { saveVideoRecord(record); } catch (error) { reportLocalFailure("无法更新已读取的视频任务", error); }
+}
 const videoQueue = new VideoQueue((task, input, outputDir, plan, signal) =>
   saveVideo(() => plan ? Promise.resolve(plan) : readVideoPlan(input, task), outputDir, temp, task, signal,
     () => videoQueue.save(task), file => prepareOutput(task.id, file)), 2, videoRecords, saveVideoRecord);
@@ -270,13 +316,33 @@ function publicJob(job: Job) {
     fileExists: !!file && existsSync(file),
   };
 }
+async function discardPlan(plan: Plan) {
+  const token = plan.resource.token;
+  if (plans.get(token) !== plan) return;
+  plans.delete(token);
+  if (plan.inputFile) await removeTemporary(plan.inputFile);
+}
 function register(plan: Plan) {
-  if (plans.size > 100) {
-    const first = plans.keys().next().value;
-    if (first) plans.delete(first);
+  if (plans.size >= 100) {
+    const oldest = plans.values().next().value;
+    if (oldest) void discardPlan(oldest);
   }
   plans.set(plan.resource.token, plan);
   return plan.resource;
+}
+function claimUpload(plan: Plan) {
+  const token = plan.resource.token;
+  if (plans.get(token) !== plan)
+    throw Object.assign(new Error("该文件已加入任务或正在恢复，请稍候。"), { status: 409 });
+  plans.delete(token);
+  claimedUploads.set(token, plan);
+}
+async function releaseUpload(plan: Plan, keepAvailable = false) {
+  const token = plan.resource.token;
+  if (claimedUploads.get(token) !== plan) return;
+  claimedUploads.delete(token);
+  if (keepAvailable && !closing) register(plan);
+  else if (plan.inputFile) await removeTemporary(plan.inputFile);
 }
 const douyinOriginal = (id: string, signal?: AbortSignal) =>
   resolveDouyinOriginalInBrowser(profile, id, accounts.cookie("douyin"), signal);
@@ -295,10 +361,11 @@ db.exec(
   "CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, value TEXT NOT NULL)",
 );
 const batches = new Batches(
-  db
-    .prepare("SELECT value FROM batches ORDER BY rowid")
-    .all()
-    .map((row) => JSON.parse(String(row.value)) as Batch),
+  storedRecords<Batch>("batches", (batch, id) => validRecordId(id) && batch?.id === id &&
+    ["resolving", "ready", "cancelled", "interrupted"].includes(batch.status) &&
+    Array.isArray(batch.items) && batch.items.every((item: Batch["items"][number]) =>
+      !!item && validRecordId(item.id) && typeof item.input === "string" &&
+      ["listed", "waiting", "resolving", "ready", "failed", "cancelled", "stale", "duplicate", "submitted"].includes(item.status))),
   (batch) =>
     db
       .prepare(
@@ -326,8 +393,15 @@ completionTracker = new CompletionTracker(
   },
 );
 function patch(job: Job, data: Partial<Job>) {
-  Object.assign(job, data);
-  save(job);
+  save(job, data);
+}
+function failBackgroundAudio(job: Job, error: unknown) {
+  reportLocalFailure("音频任务状态未能保存", error);
+  if (["completed", "failed", "cancelled"].includes(job.status)) return;
+  Object.assign(job, {
+    status: "failed", message: readableError(error),
+    interrupted: closing || job.interrupted, failureKind: undefined,
+  });
 }
 function sourceReview(message: string) {
   return Object.assign(new Error(message), { needsReview: true });
@@ -397,8 +471,9 @@ async function execute(job: Job, plan: Plan, choice: string) {
   controllers.set(job.id, c);
   const signal = c.signal;
   const scratch = path.join(temp, job.id);
-  mkdirSync(scratch, { recursive: true });
+  const originalPlan = plan;
   try {
+    mkdirSync(scratch, { recursive: true });
     existingDirectory(job.outputDir || legacyOutput);
     patch(job, {
       status: "downloading",
@@ -447,19 +522,22 @@ async function execute(job: Job, plan: Plan, choice: string) {
     const info = await probe(input, signal);
     if (job.clip) clipRange(job.clip, info.duration);
     const ext = actualExtension(job.format, info.codec);
+    const transcodeWarning = job.format === "original" && !originalAudioOutput(info.codec).copy
+      ? originalTranscodeNote : undefined;
     const staged = path.join(scratch, `output.${ext}`);
     patch(job, {
       status: "processing",
       message: "正在提取音频与写入文件",
       progress: 75,
+      warning: transcodeWarning,
     });
     let artwork: string | undefined;
-    if (job.embedCover && ext !== "wav") {
+    if (job.embedCover && supportsAttachedCover(ext)) {
       try {
         artwork = await prepareArtwork(job.cover, input, scratch, signal);
       } catch {
         if (signal.aborted) throw new Error("任务已取消");
-        patch(job, { warning: "封面未能写入，音频与歌曲信息仍已保留。" });
+        patch(job, { warning: [transcodeWarning, "封面未能写入，音频与歌曲信息仍已保留。"].filter(Boolean).join(" ") });
       }
     }
     if (job.kind === "normalized") patch(job, {message:"正在统一音量并导出副本"});
@@ -533,21 +611,22 @@ async function execute(job: Job, plan: Plan, choice: string) {
       message: signal.aborted ? "任务已取消" : readableError(error),
     });
   } finally {
+    await removeTemporary(scratch, true);
+    await releaseUpload(originalPlan);
     controllers.delete(job.id);
-    const { rm } = await import("node:fs/promises");
-    await rm(scratch, { recursive: true, force: true });
-    if (plan.inputFile && !job.parentJobId) {
-      await unlink(plan.inputFile).catch(() => {});
-      plans.delete(plan.resource.token);
-    }
   }
 }
 function drain() {
   while (!closing && !queuePaused && deletingJobs.size === 0 && active < audioQueueLimit && queue.length) {
     const item = queue.shift()!;
-    if (item.job.status === "cancelled") continue;
+    if (item.job.status === "cancelled") {
+      void releaseUpload(item.plan);
+      continue;
+    }
     active++;
-    const task = execute(item.job, item.plan, item.choice).finally(() => {
+    const task = execute(item.job, item.plan, item.choice).catch(error => {
+      failBackgroundAudio(item.job, error);
+    }).finally(() => {
       active--;
       running.delete(task);
       drain();
@@ -569,18 +648,11 @@ function readableError(error: unknown) {
     return "缺少媒体处理工具，请确认 FFmpeg 和 FFprobe 已安装。";
   return s.replace(/https?:\/\/[^\s]+/g, "[资源地址]").slice(0, 800);
 }
+const production = process.argv.includes("--production");
+const verification = createVerificationServer(qishuiLogin, path.join(root, "dist/verification.js"), readableError);
 const app = express();
 app.disable("x-powered-by");
 app.use((req, res, next) => {
-  if (
-    req.headers["x-shiyin-verification"] &&
-    !/^\/(qishui-verify\/[a-f0-9-]{36}|verification\.js|api\/login\/qishui\/qr\/[a-f0-9-]{36}\/verification\/(setup|request|complete))$/.test(
-      req.path,
-    )
-  )
-    return res
-      .status(403)
-      .json({ error: "账号验证窗口不能访问其他应用功能。" });
   if (
     process.env.SHIYIN_ACCESS_TOKEN &&
     req.headers["x-shiyin-token"] !== process.env.SHIYIN_ACCESS_TOKEN
@@ -588,33 +660,32 @@ app.use((req, res, next) => {
     return res.status(403).json({ error: "请从拾音桌面窗口访问。" });
   if (closing)
     return res.status(503).json({ error: "拾音正在退出，请稍后重试。" });
-  if (
-    req.headers.host &&
-    !/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(req.headers.host)
-  )
+  const host = req.get("Host");
+  if (host && !/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host))
     return res.status(403).json({ error: "仅支持本机访问。" });
-  const origin = req.headers.origin;
-  if (
-    origin &&
-    (!/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin) ||
-      new URL(origin).port !== String(req.socket.localPort))
-  )
+  const origin = req.get("Origin");
+  if (origin && (origin !== `http://${host}` || Number(host?.split(":")[1] ?? 80) !== req.socket.localPort))
     return res.status(403).json({ error: "请求来源不受支持。" });
   res.setHeader("X-Content-Type-Options", "nosniff");
-  if (parentPort)
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  if (production)
     res.setHeader(
       "Content-Security-Policy",
       "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
     );
   next();
 });
-app.use("/api/backup/preview", express.json({ limit: "12mb" }));
-app.use(["/api/library/organize", "/api/library/export", "/api/discovery/batches"], express.json({ limit: "1mb" }));
-app.use(express.json({ limit: "64kb" }));
-app.use("/api", (_req, res, next) => {
+app.use("/api", (req, res, next) => {
+  const site = req.get("Sec-Fetch-Site");
+  if (site && site !== "same-origin" && site !== "none")
+    return res.status(403).json({ error: "请求来源不受支持。" });
   res.setHeader("Cache-Control", "no-store");
   next();
 });
+app.use("/api/backup/preview", express.json({ limit: "12mb" }));
+app.use(["/api/library/organize", "/api/library/export", "/api/discovery/batches"], express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "64kb" }));
 app.get("/api/health", async (_, res) => {
   const tools = await Promise.all(
     ["ffmpeg", "ffprobe"].map(async (cmd) => {
@@ -794,67 +865,14 @@ app.post(
   "/api/login/qishui/qr/:id/verification/open",
   async (req, res, next) => {
     try {
-      const id = String(req.params.id);
-      const qr = qishuiLogin.current();
-      if (!qr || qr.id !== id || !qr.verificationRequired)
-        throw new Error("当前没有需要继续的账号验证。");
-      const url = `http://127.0.0.1:${req.socket.localPort}/qishui-verify/${encodeURIComponent(id)}`;
+      const url = await verification.open(String(req.params.id));
       if (parentPort) openVerificationWindow(url);
-      else
-        await run(process.platform === "darwin" ? "open" : "xdg-open", [url]);
+      else await run(process.platform === "darwin" ? "open" : "xdg-open", [url]);
       res.json({ ok: true });
     } catch (e) {
       next(e);
     }
   },
-);
-app.post(
-  "/api/login/qishui/qr/:id/verification/setup",
-  async (req, res, next) => {
-    try {
-      res.json(await qishuiLogin.verificationSetup(String(req.params.id)));
-    } catch (e) {
-      next(e);
-    }
-  },
-);
-app.post(
-  "/api/login/qishui/qr/:id/verification/request",
-  async (req, res, next) => {
-    try {
-      res.json(
-        await qishuiLogin.verificationRequest(String(req.params.id), req.body),
-      );
-    } catch (e) {
-      next(e);
-    }
-  },
-);
-app.post(
-  "/api/login/qishui/qr/:id/verification/complete",
-  async (req, res, next) => {
-    try {
-      res.json({
-        qr: await qishuiLogin.completeVerification(String(req.params.id)),
-        ...accountSettings(),
-      });
-    } catch (e) {
-      next(e);
-    }
-  },
-);
-app.get("/qishui-verify/:id", (req, res) => {
-  const qr = qishuiLogin.current();
-  if (!qr || qr.id !== req.params.id || !qr.verificationRequired)
-    return res
-      .status(410)
-      .type("text")
-      .send("本次账号验证已经结束，请返回拾音查看状态。");
-  res.setHeader("Content-Security-Policy", verificationCsp);
-  res.type("html").send(verificationHtml);
-});
-app.get("/verification.js", (_, res) =>
-  res.sendFile(path.join(root, "dist/verification.js")),
 );
 app.post("/api/login/qishui/qr", async (_, res, next) => {
   try {
@@ -1052,7 +1070,7 @@ app.post("/api/discovery/preview", async (req, res, next) => {
   finally {
     res.off("close", disconnected);
     previewRequests.delete(controller);
-    if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => {});
+    if (scratch) await removeTemporary(scratch, true);
   }
 });
 app.get("/api/discovery/batches", (_, res) => res.json(batches.discoveryHistory(id => {
@@ -1127,10 +1145,10 @@ app.post("/api/upload", upload.single("file"), async (req, res, next) => {
       streams: [],
       inputFile: req.file.path,
     };
-    if (res.destroyed) { await unlink(req.file.path).catch(() => {}); return; }
+    if (closing || res.destroyed) { await removeTemporary(req.file.path); return; }
     res.json(register(plan));
   } catch (e) {
-    if (req.file) await unlink(req.file.path).catch(() => {});
+    if (req.file) await removeTemporary(req.file.path);
     next(e);
   }
 });
@@ -1139,9 +1157,9 @@ app.delete("/api/uploads/:token", async (req, res, next) => {
   try {
     const token = String(req.params.token);
     const plan = plans.get(token);
-    const inUse = [...jobs.values()].some(job => job.resourceToken === token && !["completed", "failed", "cancelled"].includes(job.status));
-    if (inUse) return res.status(409).json({ error: "文件已加入任务，不能移除正在使用的来源。" });
-    if (plan?.inputFile) { plans.delete(token); await unlink(plan.inputFile).catch(() => {}); }
+    if (claimedUploads.has(token))
+      return res.status(409).json({ error: "文件已加入任务，不能移除正在使用的来源。" });
+    if (plan?.inputFile) await discardPlan(plan);
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
@@ -1170,10 +1188,20 @@ function audioSelection(resource: Resource, choice: string) {
 }
 app.post("/api/library/match", (req, res, next) => {
   try {
-    const plan = plans.get(req.body.token);
+    const plan = plans.get(req.body.token) || claimedUploads.get(req.body.token);
     if (!plan) return res.json({ job: null });
     const saved = findSaved(jobs.values(), plan.resource, req.body.format, audioSelection(plan.resource, req.body.choice), savedFileExists);
     res.json({ job: saved ? publicJob(saved) : null });
+  } catch (error) { next(error); }
+});
+app.get("/api/jobs/:id/audio-codec", async (req, res, next) => {
+  try {
+    const job = jobs.get(String(req.params.id));
+    const file = job && jobFile(job, legacyOutput);
+    if (job?.status !== "completed" || !file || !existsSync(file))
+      return res.status(404).json({ error: "原音频文件不存在，请先重新定位或导入文件。" });
+    const info = await probe(file, AbortSignal.timeout(10000));
+    res.json({ codec: info.codec });
   } catch (error) { next(error); }
 });
 app.get("/api/jobs/:id/waveform", async (req, res, next) => {
@@ -1210,11 +1238,11 @@ app.get("/api/jobs/:id/waveform", async (req, res, next) => {
       AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]),
     );
     res.type("jpeg").sendFile(output, async (err) => {
-      await unlink(output).catch(() => {});
+      await removeTemporary(output);
       if (err && !res.headersSent) next(err);
     });
   } catch (e) {
-    await unlink(output).catch(() => {});
+    await removeTemporary(output);
     if (!res.destroyed) next(e);
   }
 });
@@ -1496,7 +1524,7 @@ function createJob(
   // A retried batch item can already have a job if the service stopped before recording the link.
   const linked = discoveryItemId && jobs.get(discoveryItemId);
   if (linked) return linked;
-  const plan = plans.get(options.token);
+  const plan = plans.get(options.token) || claimedUploads.get(options.token);
   if (!plan) throw new Error("解析结果已过期，请重新解析链接或导入文件。");
   if (!["mp3", "m4a", "original", ...(plan.resource.platform === "local" ? ["wav"] : [])].includes(options.format))
     throw new Error("请选择有效输出格式。");
@@ -1511,10 +1539,7 @@ function createJob(
   if (options.forceCopy !== true) {
     const saved = findSaved(jobs.values(), plan.resource, options.format, selection, savedFileExists);
     if (saved) {
-      if (plan.inputFile) {
-        plans.delete(plan.resource.token);
-        void unlink(plan.inputFile).catch(() => {});
-      }
+      if (plan.inputFile) void discardPlan(plan);
       return saved;
     }
   }
@@ -1533,16 +1558,15 @@ function createJob(
     return j.resourceToken === plan.resource.token || sameSelection;
   });
   if (existing && (discoveryItemId || plan.resource.platform === "local") && options.reuseActive === true && options.forceCopy !== true) {
-    if (existing.resourceToken !== plan.resource.token && plan.inputFile) {
-      plans.delete(plan.resource.token);
-      void unlink(plan.inputFile).catch(() => {});
-    }
+    if (existing.resourceToken !== plan.resource.token && plan.inputFile) void discardPlan(plan);
     return existing;
   }
   if (existing)
     throw Object.assign(new Error("该资源正在处理，请等待或取消原任务。"), {
       status: 409,
     });
+  if (claimedUploads.has(options.token))
+    throw Object.assign(new Error("该文件正在恢复，请稍候。"), { status: 409 });
   const job: Job = {
     id: discoveryItemId || randomUUID(),
     title: metadata.title,
@@ -1567,6 +1591,7 @@ function createJob(
     outputDir: destination,
   };
   save(job);
+  if (plan.inputFile) claimUpload(plan);
   queue.push({ job, plan, choice });
   // Let the caller persist batch linkage before download starts.
   queueMicrotask(drain);
@@ -1956,17 +1981,21 @@ app.post("/api/recovery/:id/file", async (req, res, next) => {
     const job = jobs.get(String(req.params.id));
     if (!job || audioRecovery(job)?.action !== "file") throw new Error("这条任务无需重新选择文件。");
     await withRetryLock(job.id, async () => {
-      const plan = plans.get(String(req.body?.token));
+      const token = String(req.body?.token);
+      if (claimedUploads.has(token))
+        throw Object.assign(new Error("该文件已加入其他任务，请重新选择原文件。"), { status: 409 });
+      const plan = plans.get(token);
       if (!plan?.inputFile || plan.resource.platform !== "local" || plan.resource.sourceId !== job.sourceId)
         throw new Error("所选文件和原文件内容不一致，请重新选择。");
-      if ([...jobs.values()].some(other => other.resourceToken === plan.resource.token && !["completed", "failed", "cancelled"].includes(other.status)))
-        throw new Error("该文件已加入其他任务，请重新选择原文件。");
-      if (await restoreAudioOutput(job)) {
-        plans.delete(plan.resource.token);
-        await unlink(plan.inputFile).catch(() => {});
-        return;
+      claimUpload(plan);
+      let queued = false;
+      try {
+        if (await restoreAudioOutput(job)) return;
+        queueRecovered(job, plan, "original");
+        queued = true;
+      } finally {
+        if (!queued) await releaseUpload(plan, job.status !== "completed");
       }
-      queueRecovered(job, plan, "original");
     });
     res.json(publicJob(job));
   } catch (error) { next(error); }
@@ -2082,10 +2111,12 @@ app.post("/api/jobs/:id/separate", async (req, res, next) => {
           else patch(job, { status: controller.signal.aborted ? "cancelled" : "failed", message: controller.signal.aborted ? "分离已取消。" : readableError(error) });
         }
       } finally {
+        await removeTemporary(scratch, true);
         for (const job of stems) controllers.delete(job.id);
-        const { rm } = await import("node:fs/promises"); await rm(scratch, { recursive: true, force: true });
       }
-    })().finally(() => { separationBusy = false; active--; running.delete(task); drain(); });
+    })().catch(error => {
+      for (const job of stems) failBackgroundAudio(job, error);
+    }).finally(() => { separationBusy = false; active--; running.delete(task); drain(); });
     running.add(task);
     res.status(202).json({ jobs: stems.map(publicJob) });
   } catch (error) { next(error); }
@@ -2108,7 +2139,7 @@ app.post("/api/jobs/:id/cancel", (req, res) => {
     const index = queue.findIndex(item => item.job.id === j.id);
     if (index >= 0) {
       const [item] = queue.splice(index, 1);
-      if (item.plan.inputFile && !j.parentJobId) { plans.delete(item.plan.resource.token); void unlink(item.plan.inputFile).catch(() => {}); }
+      void releaseUpload(item.plan);
     }
     patch(j, { status: "cancelled", interrupted: undefined, needsReview: undefined, message: "任务已取消" });
   }
@@ -2175,7 +2206,7 @@ app.post("/api/jobs/:id/open-folder", async (req, res, next) => {
   }
 });
 app.use("/api", (_, res) => res.status(404).json({ error: "接口不存在。" }));
-if (process.argv.includes("--production")) {
+if (production) {
   app.use(express.static(path.join(root, "dist")));
   app.get("/{*splat}", (_, res) =>
     res.sendFile(path.join(root, "dist/index.html")),
@@ -2214,6 +2245,7 @@ const server = app.listen(port, "127.0.0.1", (error?: Error) => {
   const actualPort = (server.address() as import("node:net").AddressInfo).port;
   console.log(`拾音已启动：http://127.0.0.1:${actualPort}`);
   parentPort?.postMessage({ type: "ready", port: actualPort });
+  void clearStaleMedia(tempRoot);
   for (const platform of ["douyin", "qishui"] as const)
     if (accounts.state(platform).hasCredentials)
       void checkAccount(platform).catch(() => {});
@@ -2226,17 +2258,18 @@ async function shutdown() {
   clearInterval(qrTimer);
   bilibiliLogin.cancel();
   clearInterval(browserLoginTimer);
-  for (const { job, plan } of queue.splice(0)) {
-    interruptedAudio(job);
-    if (plan.inputFile && !job.parentJobId) void unlink(plan.inputFile).catch(() => {});
+  for (const { job } of queue.splice(0)) {
+    try { interruptedAudio(job); } catch (error) { failBackgroundAudio(job, error); }
   }
   batches.stopAll();
   for (const c of controllers.values()) c.abort();
   for (const c of playlistRequests) c.abort();
   for (const c of previewRequests) c.abort();
+  await verification.close();
   await Promise.allSettled([qishuiLogin.suspend(), closeBrowser(), videoStopped, ...running, ...pendingDeletions]);
   server.close();
   server.closeAllConnections();
+  await removeTemporary(temp, true);
   db.close();
   process.exit(0);
 }

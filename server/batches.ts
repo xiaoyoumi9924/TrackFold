@@ -10,6 +10,7 @@ import type {
   PlaylistTrack,
 } from "../shared/types.ts";
 import { extractLink } from "./providers.ts";
+import { reportLocalFailure } from "./temporary-media.ts";
 
 export function batchLinks(text: string) {
   if (typeof text !== "string" || text.length > 30000)
@@ -43,9 +44,11 @@ export class Batches {
           interrupted = true;
         }
       }
-      if (interrupted) batch.status = "interrupted";
       this.data.set(batch.id, batch);
-      this.persist(batch);
+      if (interrupted) {
+        batch.status = "interrupted";
+        this.persistProgress(batch);
+      }
     }
   }
   discoveryHistory(unfinishedJob?: (id: string) => boolean) {
@@ -83,8 +86,8 @@ export class Batches {
         status: "waiting", message: "等待解析",
       })),
     };
-    this.data.set(batch.id, batch);
     this.persist(batch);
+    this.data.set(batch.id, batch);
     void this.drain();
     return this.get(batch.id);
   }
@@ -121,8 +124,10 @@ export class Batches {
   }
   get size() { return this.data.size; }
   stopAll() {
-    for (const batch of this.data.values())
-      if (batch.status === "resolving") this.cancel(batch.id);
+    for (const batch of this.data.values()) {
+      if (batch.status !== "resolving") continue;
+      try { this.cancel(batch.id); } catch (error) { reportLocalFailure("未能保存批次停止状态", error); }
+    }
   }
   get(id: string) {
     const batch = this.data.get(id);
@@ -143,8 +148,8 @@ export class Batches {
         message: "等待解析",
       })),
     };
-    this.data.set(batch.id, batch);
     this.persist(batch);
+    this.data.set(batch.id, batch);
     void this.drain();
     return this.get(batch.id);
   }
@@ -163,8 +168,8 @@ export class Batches {
         message: "歌曲信息已读取，尚未解析音频。",
       })),
     };
-    this.data.set(batch.id, batch);
     this.persist(batch);
+    this.data.set(batch.id, batch);
     return this.get(batch.id);
   }
   comparePlaylist(id: string, data: PlaylistImport) {
@@ -261,6 +266,9 @@ export class Batches {
     if (!batch) throw new Error("批次不存在，请重新添加链接。");
     return batch;
   }
+  private persistProgress(batch: Batch) {
+    try { this.persist(batch); } catch (error) { reportLocalFailure("未能保存批次进度", error); }
+  }
   private async drain() {
     if (this.running) return;
     this.running = true;
@@ -273,7 +281,7 @@ export class Batches {
         if (!batch || !item) break;
         item.status = "resolving";
         item.message = "正在解析资源";
-        this.persist(batch);
+        this.persistProgress(batch);
         try {
           const link = extractLink(item.input);
           const host = new URL(link).hostname;
@@ -329,8 +337,19 @@ export class Batches {
             batch.status === "resolving"
           )
             batch.status = "ready";
-          this.persist(batch);
+          this.persistProgress(batch);
         }
+      }
+    } catch (error) {
+      reportLocalFailure("批次处理意外停止", error);
+      for (const batch of this.data.values()) {
+        if (batch.status !== "resolving") continue;
+        for (const item of batch.items) if (item.status === "resolving" || item.status === "waiting") {
+          item.status = "failed";
+          item.message = "批次处理未完成，请重试。";
+        }
+        batch.status = "ready";
+        this.persistProgress(batch);
       }
     } finally {
       this.running = false;

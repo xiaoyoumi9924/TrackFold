@@ -104,14 +104,14 @@
     const now = Date.now();
     for (const [key, time] of recentSubmissions) if (now - time >= 3000) recentSubmissions.delete(key);
     if (recentSubmissions.has(requestKey))
-      return message('刚刚已尝试打开拾音，请查看应用中的任务。');
+      return message('刚刚已尝试打开拾音，请在应用中查看保存请求。');
     recentSubmissions.set(requestKey, now);
     const a = document.createElement('a');
     const bili = location.hostname === 'www.bilibili.com';
     const [id, part] = active.id.split(':');
     a.href = `shiyin-audio://${bili ? 'bilibili' : 'douyin'}/${kind === 'video' ? 'video' : 'download'}?id=${id}${bili ? `&p=${part}` : ''}`;
     a.click();
-    message(kind === 'video' ? '已请求保存视频，请在拾音的“视频保存”中查看结果。水印以实际画面为准。' : '已请求打开拾音。请允许浏览器打开应用，并在拾音中查看实际进度。');
+    message(kind === 'video' ? '已请求打开拾音，请在应用中确认保存视频。水印以实际画面为准。' : '已请求打开拾音。请允许浏览器打开应用，并在拾音中确认保存音频。');
   }
   button.addEventListener('click', event => {
     event.stopPropagation();
