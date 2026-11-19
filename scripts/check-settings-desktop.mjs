@@ -52,7 +52,6 @@ async function upload(file) {
   await page.locator('.upload-entry input[type=file]').setInputFiles(file);
   await page.getByRole('button',{name:'提取并保存',exact:true}).click();
 }
-function chooseTimer() { return page.getByRole('button',{name:'定时关闭',exact:true}).click(); }
 const general = () => page.evaluate(()=>window.shiyinDesktop.preferences());
 try {
   await start('original');
@@ -78,6 +77,7 @@ try {
   }
   assert.equal(await page.getByText('启动时打开',{exact:true}).count(),0);
   await capture('settings-general');
+  assert.equal(await desktop.evaluate(async ({clipboard}) => typeof await clipboard.readText()), 'string');
   await desktop.evaluate(({globalShortcut,clipboard})=>{
     const register=globalShortcut.register.bind(globalShortcut);
     globalShortcut.register=(key,handler)=>{
@@ -86,7 +86,7 @@ try {
       globalThis.qaShortcut=handler;
       return true;
     };
-    clipboard.readText=()=> '分享 https://www.bilibili.com/video/BV19x41167JZ';
+    clipboard.readText=async()=> '分享 https://www.bilibili.com/video/BV19x41167JZ';
   });
   const shortcutKey=page.getByRole('button',{name:/^快捷启动 /});
   await shortcutKey.click();
@@ -103,8 +103,16 @@ try {
   let resolutions=0;
   page.on('request',request=>{if (request.url().endsWith('/api/resolve')) resolutions++;});
   await desktop.evaluate(()=>globalThis.qaShortcut());
-  assert.equal(await page.getByRole('textbox',{name:'歌曲或视频分享链接'}).inputValue(),'https://www.bilibili.com/video/BV19x41167JZ');
+  const link = page.getByRole('textbox',{name:'歌曲或视频分享链接'});
+  await page.waitForFunction(() => document.getElementById('share-link')?.value === 'https://www.bilibili.com/video/BV19x41167JZ');
+  assert.equal(await link.inputValue(),'https://www.bilibili.com/video/BV19x41167JZ');
   assert.equal(resolutions,0);
+  await nav('设置').click();
+  await desktop.evaluate(async ({clipboard})=>{
+    clipboard.readText=async()=>{throw new Error('Clipboard unavailable');};
+    await globalThis.qaShortcut();
+  });
+  assert.equal(await nav('设置').getAttribute('aria-current'), 'page');
   await desktop.evaluate(({Menu})=>{
     const configure=Menu.getApplicationMenu().items[0].submenu.items.find(item=>item.label==='设置…');
     assertShortcut(configure);
@@ -129,7 +137,8 @@ try {
   await nav('歌单').click();
   await page.getByRole('button',{name:'播放全部',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('.bottom-player audio')?.currentTime > 0.3);
-  await chooseTimer();
+  await nav('设置').click();
+  await category('通用').click();
   const timer = page.getByRole('region',{name:'定时关闭',exact:true});
   await timer.getByRole('button',{name:'开始计时'}).waitFor();
   await capture('sleep-timer-choices');
@@ -148,7 +157,6 @@ try {
   let sawPause=false;
   await page.exposeFunction('qaObservePause',()=>{sawPause=true;});
   await page.evaluate(()=>document.querySelector('.bottom-player audio').addEventListener('pause',()=>void window.qaObservePause(),{once:true}));
-  await timer.getByRole('button',{name:'收起定时关闭'}).click();
   await api('/api/queue',{paused:true});
   await nav('音频提取').click();
   await upload(queuedFile);

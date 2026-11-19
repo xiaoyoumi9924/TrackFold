@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -13,24 +13,22 @@ const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'shiyin-delete-')))
 const profile = path.join(root, 'profile');
 const output = path.join(root, 'output');
 const videoDir = path.join(output, '视频');
-const onceDir = path.join(root, 'once');
 mkdirSync(path.join(profile, 'data'), { recursive: true });
 mkdirSync(videoDir, { recursive: true });
-mkdirSync(onceDir);
 const file = path.join(root, '音频样本.wav');
 execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=450:duration=2', file]);
 const original = readFileSync(file);
 const database = new DatabaseSync(path.join(profile, 'data', 'tasks.sqlite'));
 database.exec('CREATE TABLE video_jobs (id TEXT PRIMARY KEY, value TEXT NOT NULL)');
 const insert = database.prepare('INSERT INTO video_jobs VALUES (?, ?)');
-function addVideo(title, fingerprint) {
+function addVideo(title, fingerprint, directory = videoDir) {
   const id = randomUUID();
-  const filePath = path.join(videoDir, `${title}.mp4`);
+  const filePath = path.join(directory, `${title}.mp4`);
   execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'color=black:s=64x64:d=1', '-c:v', 'mpeg4', filePath]);
   const bytes = readFileSync(filePath);
   insert.run(id, JSON.stringify({
     input: 'https://www.bilibili.com/video/BV1Example',
-    outputDir: videoDir,
+    outputDir: directory,
     task: { id, title, status: 'completed', message: '视频已保存。', platform: 'bilibili', filePath,
       checksum: fingerprint ? createHash('sha256').update(bytes).digest('hex') : undefined },
   }));
@@ -38,6 +36,11 @@ function addVideo(title, fingerprint) {
 }
 const currentVideo = addVideo('当前 视频 #样本', true);
 const oldVideo = addVideo('旧版视频样本', false);
+const missingVideo = addVideo('删除文件的测试视频', true);
+const offlineDir = path.join(root, '暂时离线的视频目录');
+mkdirSync(offlineDir);
+const offlineVideo = addVideo('离线目录的测试视频', true, offlineDir);
+renameSync(offlineDir, offlineDir + '-offline');
 database.close();
 
 const options = { executablePath, env: { ...process.env, SHIYIN_DESKTOP_DATA_DIR: profile, SHIYIN_DESKTOP_OUTPUT_DIR: output }, timeout: 45000 };
@@ -45,22 +48,18 @@ let app;
 try {
   app = await _electron.launch(options);
   await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1 }); });
-  await app.evaluate(({ dialog }, selected) => {
-    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selected] });
-  }, onceDir);
   const page = await app.firstWindow();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.getByRole('tab', { name: '本地文件', exact: true }).click();
   await page.locator('.upload-entry input[type=file]').setInputFiles(file);
-  await page.getByRole('button', { name: '本次更改', exact: true }).click();
-  await page.getByText(onceDir, {exact:true}).waitFor();
+  await page.getByRole('region', { name: '解析结果', exact: true }).getByText(output, {exact:true}).waitFor();
   await page.getByRole('button', { name: '提取并保存', exact: true }).click();
   const jobs = () => page.evaluate(async () => (await fetch('/api/jobs')).json());
   await page.locator('.jobs-section').getByText('已完成', { exact: true }).waitFor();
   const [job] = await jobs();
   const bytes = readFileSync(job.filePath);
-  assert.equal(path.dirname(job.filePath), onceDir);
+  assert.equal(path.dirname(job.filePath), output);
   assert.equal(await page.evaluate(async () => (await (await fetch('/api/storage?kind=audio')).json()).outputDir), output);
   await page.getByRole('navigation', {name:'主导航'}).getByRole('button', {name:'任务', exact:true}).click();
   const videoRow = page.getByRole('region', {name:'提取任务'}).locator('article').filter({hasText:currentVideo.title});
@@ -91,17 +90,38 @@ try {
   assert.deepEqual(readFileSync(file), original);
 
   await page.setViewportSize({ width: 1220, height: 820 });
-  await page.getByRole('button', { name: '视频提取', exact: true }).click();
+  await page.getByRole('button', { name: '音频提取', exact: true }).click();
+  await page.locator('.upload-entry input[type=file]').setInputFiles(file);
+  await page.getByRole('button', { name: '提取并保存', exact: true }).click();
+  await page.locator('.jobs-section').getByText('已完成', { exact: true }).waitFor();
+  const [missing] = await jobs();
+  unlinkSync(missing.filePath);
+  await page.locator('.jobs-section').getByRole('heading', { name: missing.title, exact: true }).waitFor({ state: 'detached' });
+  assert.equal((await jobs()).some(job => job.id === missing.id), false);
+  assert.deepEqual(readFileSync(file), original);
+
   const row = video => page.locator('.video-result').filter({ has: page.getByRole('heading', { name: video.title, exact: true }) });
+  const nav = page.getByRole('navigation', { name: '主导航' });
+  await nav.getByRole('button', { name: '视频提取', exact: true }).click();
+  await row(missingVideo).getByRole('heading', { name: missingVideo.title, exact: true }).waitFor();
+  unlinkSync(missingVideo.filePath);
+  await row(missingVideo).waitFor({ state: 'detached' });
+  await row(offlineVideo).getByText('文件缺失', { exact: true }).waitFor();
+
   chmodSync(videoDir, 0o500);
   try {
-    for (const video of [currentVideo, oldVideo]) {
-      await row(video).getByLabel('更多视频操作').click();
-      assert.equal(await row(video).getByRole('button', {name:'删除视频', exact:true}).count(), 0);
-      await row(video).getByRole('button', {name:'移除记录', exact:true}).click();
-      await row(video).waitFor({state:'detached'});
-      assert.deepEqual(readFileSync(video.filePath), video.bytes);
-    }
+    await nav.getByRole('button', { name: '任务', exact: true }).click();
+    await page.getByRole('button', { name: '视频', exact: true }).click();
+    await videoRow.getByRole('button', { name: '更多视频操作' }).click();
+    await page.getByRole('button', { name: '移除记录', exact: true }).click();
+    await videoRow.waitFor({ state: 'detached' });
+    assert.deepEqual(readFileSync(currentVideo.filePath), currentVideo.bytes);
+
+    await nav.getByRole('button', { name: '视频提取', exact: true }).click();
+    await row(oldVideo).getByLabel('更多视频操作').click();
+    await row(oldVideo).getByRole('button', { name: '移除记录', exact: true }).click();
+    await row(oldVideo).waitFor({ state: 'detached' });
+    assert.deepEqual(readFileSync(oldVideo.filePath), oldVideo.bytes);
   } finally { chmodSync(videoDir, 0o700); }
   assert.deepEqual(errors, []);
   await app.close();
@@ -109,8 +129,10 @@ try {
   const reopened = await app.firstWindow();
   assert.deepEqual(await reopened.evaluate(async () => (await fetch('/api/jobs')).json()), []);
   const videos = await reopened.evaluate(async () => (await fetch('/api/videos')).json());
-  assert.deepEqual(videos, []);
-  console.log('PASS record-only deletion, rejection of trash mode, preserved media in read-only folder and restart', root);
+  assert.deepEqual(videos.map(video => video.id), [offlineVideo.id]);
+  renameSync(offlineDir + '-offline', offlineDir);
+  assert.deepEqual(readFileSync(offlineVideo.filePath), offlineVideo.bytes);
+  console.log('PASS automatic cleanup of missing audio and video records, offline directory retention and restart', root);
 } catch (error) {
   console.error(error);
   throw error;

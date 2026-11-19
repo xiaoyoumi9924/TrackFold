@@ -1,10 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { Timer, X } from "@lucide/vue";
 import { onDesktopAction, shutdownTimer } from "../desktop-preferences";
 
-const panel = ref<HTMLElement>();
-const opened = ref(false);
 const deadline = ref<number | null>(null);
 const now = ref(Date.now());
 const duration = ref("30");
@@ -36,34 +33,23 @@ async function change(value?: number | null) {
   catch { error.value = "定时关闭暂不可用，请重试。"; }
   finally { busy.value = false; }
 }
-function refreshPanel(event: Event) {
-  opened.value = (event.currentTarget as HTMLElement).matches(":popover-open");
-  if (opened.value) void change();
-}
 onMounted(() => {
   removeAction = onDesktopAction(message => { if (message.type === "timer") setDeadline(message.deadline); });
-  ticker = setInterval(() => { if (deadline.value && opened.value) now.value = Date.now(); }, 1000);
+  ticker = setInterval(() => { if (deadline.value) now.value = Date.now(); }, 1000);
   void change();
 });
 onUnmounted(() => { removeAction?.(); clearInterval(ticker); });
 </script>
 
 <template>
-  <button class="player-tool-button sleep-trigger" type="button" aria-label="定时关闭" :aria-expanded="opened"
-    :title="deadline ? '定时关闭 · ' + finishTime : '定时关闭'" :class="{ active: !!deadline }" popovertarget="sleep-timer">
-    <Timer :size="21" aria-hidden="true" /><span v-if="deadline" class="sr-only">已开启</span>
-  </button>
-  <section id="sleep-timer" ref="panel" class="player-queue sleep-timer" popover aria-labelledby="sleep-timer-heading" @toggle="refreshPanel">
-    <header class="section-heading">
-      <h2 id="sleep-timer-heading">定时关闭</h2>
-      <button type="button" class="icon-button" aria-label="收起定时关闭" @click="panel?.hidePopover()"><X :size="17" /></button>
-    </header>
+  <section class="settings-card sleep-timer" aria-labelledby="sleep-timer-heading">
+    <h3 id="sleep-timer-heading">定时关闭</h3>
     <div v-if="deadline" class="sleep-active">
-      <div><span class="sleep-countdown">{{ remaining }}</span><p>{{ finishTime }} 退出拾音</p></div>
+      <div><span class="sleep-countdown" role="timer" aria-label="剩余时间">{{ remaining }}</span><p>{{ finishTime }} 退出拾音</p></div>
       <button type="button" class="secondary" :disabled="busy" @click="change(null)">取消定时</button>
     </div>
     <form v-else class="sleep-form" @submit.prevent="valid && change(minutes)">
-      <label><span>关闭时间</span><select v-model="duration" :disabled="busy">
+      <label><span class="sr-only">关闭时间</span><select v-model="duration" :disabled="busy">
         <option value="15">15 分钟后</option><option value="30">30 分钟后</option>
         <option value="45">45 分钟后</option><option value="60">60 分钟后</option>
         <option value="90">90 分钟后</option><option value="custom">自定时长</option>
@@ -72,6 +58,6 @@ onUnmounted(() => { removeAction?.(); clearInterval(ticker); });
       <p>到时停止播放并退出，未完成的任务留待下次处理。</p>
       <button type="submit" class="primary" :disabled="busy || !valid">开始计时</button>
     </form>
-    <p v-if="error" class="sleep-error" role="alert">{{ error }}</p>
+    <p v-if="error" class="settings-inline-error" role="alert">{{ error }}</p>
   </section>
 </template>

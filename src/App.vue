@@ -14,7 +14,6 @@ import { lastSettingsSection, type SettingsSection } from "./settings-sections";
 import { confirmPlaybackStopped, onDesktopAction } from "./desktop-preferences";
 import SettingsWorkspace from "./components/SettingsWorkspace.vue";
 import FileLocation from "./components/FileLocation.vue";
-import SleepTimer from "./components/SleepTimer.vue";
 import SongOptions from "./components/SongOptions.vue";
 import AudioEditor from "./components/AudioEditor.vue";
 import QishuiDiscovery from "./components/QishuiDiscovery.vue";
@@ -30,11 +29,12 @@ import {
   ArrowUpRight,
   Check,
   Info,
+  ChevronDown,
   ChevronRight,
   Clipboard,
   FileAudio,
   FolderOpen,
-  Layers, ListMusic, Ellipsis, ArrowRight,
+  Layers, ListMusic, ListPlus, Ellipsis, ArrowRight,
   SquarePlay,
   Link2,
   LoaderCircle,
@@ -52,7 +52,7 @@ import {
   Scissors,
   Tags,
   Heart,
-  SkipBack, SkipForward, Pause, Volume2, VolumeX,
+  SkipBack, SkipForward, Pause, Volume2, VolumeX, Repeat, Repeat1,
 } from "@lucide/vue";
 import type {
   AccountPlatform,
@@ -167,7 +167,6 @@ const page = ref("workspace"),
   jobs = ref<Job[]>([]),
   format = ref(savedOutputFormat()),
   choice = ref(""),
-  allowPreview = ref(false),
   error = ref(""),
   notice = ref(""),
   health = ref<any>(null),
@@ -206,10 +205,14 @@ type RepeatMode = "off" | "all" | "one";
 const storedRepeat = localStorage.getItem("shiyin-repeat");
 const repeatMode = ref<RepeatMode>(storedRepeat === "all" || storedRepeat === "one" ? storedRepeat : "off");
 const repeatLabel = computed(() => ({ off: "顺序播放", all: "列表循环", one: "单曲循环" })[repeatMode.value]);
+const repeatNotice = ref("");
+let repeatNoticeTimer: ReturnType<typeof setTimeout> | undefined;
 function cycleRepeat() {
   repeatMode.value = ({ off: "all", all: "one", one: "off" } as const)[repeatMode.value];
   localStorage.setItem("shiyin-repeat", repeatMode.value);
-  toast(repeatLabel.value);
+  repeatNotice.value = repeatLabel.value;
+  clearTimeout(repeatNoticeTimer);
+  repeatNoticeTimer = setTimeout(() => { repeatNotice.value = ""; }, 2000);
 }
 const playerPosition = ref(0);
 const playerDuration = ref(0);
@@ -360,13 +363,15 @@ async function setQueuePaused(paused: boolean) {
 }
 
 const pendingPlaylistInput = ref("");
-function selectDiscoveredSong(id: string, parsed?: Resource) {
+const reviewingBatchItem = ref<{ batchId: string; itemId: string }>();
+function selectDiscoveredSong(id: string, parsed?: Resource, batchId?: string, itemId?: string) {
   invalidateResource();
   page.value = "workspace";
   input.value = `https://music.douyin.com/qishui/share/track?track_id=${id}`;
   mode.value = "link";
   error.value = "";
   if (parsed) showResource(parsed);
+  if (batchId && itemId) reviewingBatchItem.value = { batchId, itemId };
 }
 function openDiscovery(playlist = "") {
   pendingPlaylistInput.value = playlist;
@@ -493,19 +498,26 @@ const accountLabel = (platform: AccountPlatform) =>
         : "等待窗口登录",
   })[account(platform).status];
 const recoveryJobId = ref("");
-const audioDestination = ref("");
 const audioDestinationReady = ref(false);
+const songOptionsOpen = ref(false);
 const recoveryDestination = computed(() => jobs.value.find(job => job.id === recoveryJobId.value)?.outputDir);
 watch(() => resource.value?.token, () => {
-  audioDestination.value = "";
   audioDestinationReady.value = false;
+  songOptionsOpen.value = false;
+  songMetadata.value = undefined;
+  forceCopy.value = false;
 }, { flush: "sync" });
 
 function invalidateResource() {
+  const previous = resource.value;
   resourceRequest++;
   resource.value = null;
-  allowPreview.value = false;
   recoveryJobId.value = "";
+  reviewingBatchItem.value = undefined;
+  if (previous?.platform === "local" && !busy.value) discardUpload(previous);
+}
+function discardUpload(uploaded: Resource) {
+  void api(`/api/uploads/${encodeURIComponent(uploaded.token)}`, { method: "DELETE" }).catch(() => {});
 }
 const activeJobs = computed(() =>
   jobs.value.filter(
@@ -513,6 +525,15 @@ const activeJobs = computed(() =>
   ),
 );
 watch(input, () => {
+  invalidateResource();
+  error.value = "";
+}, { flush: "sync" });
+watch(mode, () => {
+  invalidateResource();
+  error.value = "";
+}, { flush: "sync" });
+watch(localBatchMode, () => {
+  if (mode.value !== "file") return;
   invalidateResource();
   error.value = "";
 }, { flush: "sync" });
@@ -635,6 +656,7 @@ async function videoAction(action: VideoTaskAction, task: VideoTask) {
     if (action === "remove") {
       videoRevision++;
       videos.value = videos.value.filter(item => item.id !== task.id);
+      if (playingVideo.value?.id === task.id) playingVideo.value = null;
       toast("已移除记录，视频文件仍在原处。");
     } else if (action !== "open-folder") updateVideoTask(result as VideoTask);
   } catch (cause) { toast((cause as Error).message); }
@@ -642,13 +664,15 @@ async function videoAction(action: VideoTaskAction, task: VideoTask) {
 }
 function showTasks(type: typeof initialTaskType.value = "all", recover = false) {
   initialTaskType.value = type;
-  initialDiscoveryBatch.value = "";
   recoveryOpen.value = recover;
   page.value = "tasks";
 }
 function showDiscoveryBatch(id: string) {
   showTasks("audio");
   initialDiscoveryBatch.value = id;
+}
+function finishDiscoveryBatch(id: string) {
+  if (initialDiscoveryBatch.value === id) initialDiscoveryBatch.value = "";
 }
 const watchingVideos = computed(() => page.value === "tasks" || page.value === "video");
 watch(watchingVideos, active => { if (active) void refreshVideos(); });
@@ -665,8 +689,12 @@ async function loadSettings() {
 }
 function showResource(result: Resource) {
   resource.value = result;
+  songOptionsOpen.value = result.platform === "local";
   if (hasExplicitOutputFormat()) format.value = savedOutputFormat();
-  choice.value = result.choices.slice().sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0]?.id || "";
+  const losslessRank = (quality?: string) => quality === "hi_res" ? 2 : quality === "lossless" ? 1 : 0;
+  choice.value = result.choices.slice().sort((a, b) =>
+    losslessRank(b.quality) - losslessRank(a.quality) || (b.bitrate ?? 0) - (a.bitrate ?? 0)
+  )[0]?.id || "";
 }
 function openVideoAudio(result: Resource, source: string) {
   invalidateResource();
@@ -689,7 +717,7 @@ async function resolve() {
   busy.value = true;
   error.value = "";
   resource.value = null;
-  allowPreview.value = false;
+  reviewingBatchItem.value = undefined;
   try {
     const result = await post("/api/resolve", { input: source });
     if (request !== resourceRequest || input.value !== source) return;
@@ -713,20 +741,19 @@ async function paste() {
 }
 async function upload(file?: File) {
   if (!file || uploading.value) return;
-  recoveryJobId.value = "";
-  const request = ++resourceRequest;
+  invalidateResource();
+  const request = resourceRequest;
   uploading.value = true;
-  resource.value = null;
-  allowPreview.value = false;
   error.value = "";
   try {
     const body = new FormData();
     body.append("file", file);
-    const result = await api("/api/upload", { method: "POST", body });
-    if (request !== resourceRequest) return;
-    resource.value = result;
-    if (hasExplicitOutputFormat()) format.value = savedOutputFormat();
-    choice.value = "original";
+    const result: Resource = await api("/api/upload", { method: "POST", body });
+    if (request !== resourceRequest) {
+      discardUpload(result);
+      return;
+    }
+    showResource(result);
   } catch (e) {
     if (request === resourceRequest) error.value = (e as Error).message;
   } finally {
@@ -739,30 +766,31 @@ function drop(event: DragEvent) {
   void uploadFiles(Array.from(event.dataTransfer?.files || []));
 }
 async function createJob() {
-  if (!resource.value || busy.value || !audioDestinationReady.value || resource.value.completeness === "preview" && !allowPreview.value) return;
+  const current = resource.value;
+  if (!current || busy.value || !audioDestinationReady.value) return;
   const requestedFormat = format.value;
   const recoveryId = recoveryJobId.value;
+  const reviewed = reviewingBatchItem.value;
+  const endpoint = recoveryId ? `/api/recovery/${encodeURIComponent(recoveryId)}/confirm`
+    : reviewed ? `/api/batches/${encodeURIComponent(reviewed.batchId)}/items/${encodeURIComponent(reviewed.itemId)}/submit`
+    : "/api/jobs";
   busy.value = true;
   error.value = "";
   try {
-    const result: Job = await post(recoveryId ? `/api/recovery/${encodeURIComponent(recoveryId)}/confirm` : "/api/jobs", {
+    await post(endpoint, {
       ...(recoveryId ? {} : {
         metadata: songMetadata.value,
-        forceCopy: forceCopy.value || !!audioDestination.value,
-        outputDir: audioDestination.value || undefined,
+        forceCopy: forceCopy.value,
       }),
-      token: resource.value.token,
+      token: current.token,
       format: requestedFormat,
       choice: choice.value,
-      allowPreview: allowPreview.value,
+      allowPreview: current.completeness === "preview",
     });
-    if (recoveryId) invalidateResource();
-    else rememberOutputFormat(requestedFormat);
-    toast(
-      recoveryId ? "已继续上次任务。" : result.status === "completed"
-        ? "已找到历史文件，本次未重复保存。可在音频文件中查看。"
-        : "已加入提取任务",
-    );
+    if (!recoveryId) rememberOutputFormat(requestedFormat);
+    if (resource.value === current && (recoveryId || reviewed || current.platform === "local")) invalidateResource();
+    if (reviewed) showDiscoveryBatch(reviewed.batchId);
+    if (recoveryId) toast("已继续上次任务。");
     await refresh();
   } catch (e) {
     error.value = (e as Error).message;
@@ -920,6 +948,7 @@ async function connectDouyin() {
 }
 async function resolveAgain() {
   page.value = "workspace";
+  mode.value = "link";
   await resolve();
 }
 async function stopPlaybackForShutdown() {
@@ -951,6 +980,9 @@ onMounted(async () => {
     error.value = "本地服务未连接，请重新启动工具。";
   }
   await refresh();
+  void api("/api/discovery/batches").then((history: { id: string; needsAttention?: boolean }[]) => {
+    if (!initialDiscoveryBatch.value) initialDiscoveryBatch.value = history.find(batch => batch.needsAttention)?.id || "";
+  }).catch(() => {});
   timer = setInterval(() => {
     void refresh();
     if (watchingVideos.value) void refreshVideos();
@@ -964,6 +996,7 @@ onUnmounted(() => {
   removeDesktopActions?.();
   clearInterval(timer);
   clearTimeout(noticeTimer);
+  clearTimeout(repeatNoticeTimer);
 });
 </script>
 
@@ -1016,8 +1049,8 @@ onUnmounted(() => {
     </aside>
     <div class="app-main">
       <main id="main-content" tabindex="-1">
-        <VideoWorkspace :active="page === 'video'" :request="api" :tasks="videos" :busy-task="videoBusy" :load-error="videoLoadError" :queue="videoQueueState" :queue-busy="videoQueueBusy"
-          @notice="toast" @audio="openVideoAudio" @updated="updateVideoTask" @action="videoAction" @pause-queue="setVideoQueuePaused" @tasks="showTasks('video')" @recovery="showTasks('video', true)" />
+        <VideoWorkspace :active="page === 'video'" :request="api" :tasks="videos" :busy-task="videoBusy" :load-error="videoLoadError"
+          @notice="toast" @audio="openVideoAudio" @updated="updateVideoTask" @action="videoAction" @tasks="showTasks('video')" @recovery="showTasks('video', true)" />
         <template v-if="page === 'workspace'">
           <div class="page-heading">
             <h1>音频提取</h1>
@@ -1035,20 +1068,14 @@ onUnmounted(() => {
                   role="tab"
                   :aria-selected="mode === 'link'"
                   :class="{ selected: mode === 'link' }"
-                  @click="
-                    mode = 'link';
-                    error = '';
-                  "
+                  @click="mode = 'link'"
                 >
                   <Link2 :size="23" />分享链接</button
                 ><button
                   role="tab"
                   :aria-selected="mode === 'file'"
                   :class="{ selected: mode === 'file' }"
-                  @click="
-                    mode = 'file';
-                    error = '';
-                  "
+                  @click="mode = 'file'"
                 >
                   <FolderOpen :size="23" />本地文件</button
                 </button>
@@ -1143,78 +1170,60 @@ onUnmounted(() => {
             >
               <div class="section-heading">
                 <h2 id="result-title">解析结果</h2>
-                <span v-if="resource" class="source-label">{{
-                  platformName(resource.platform)
-                }}</span>
               </div>
               <template v-if="resource">
                 <div class="resource-summary">
                   <AudioCover :src="resource.cover" />
                   <div class="resource-identity">
-                    <h3>{{ resource.title }}</h3>
-                    <p v-if="resource.artist">{{ resource.artist }}</p>
+                    <h3 :title="resource.title">{{ resource.title }}</h3>
+                    <p v-if="resource.artist" :title="resource.artist">{{ resource.artist }}</p>
                     <span class="resource-duration">
                       {{ time(resource.duration) }}<template v-if="resource.completeness === 'preview' && resource.expectedDuration"> / 全曲 {{ time(resource.expectedDuration) }}</template>
                     </span>
-                    <div class="resource-actions">
-                      <span class="completeness-chip" :class="resource.completeness">
-                        <AudioLines :size="18" />{{ resource.videoAudioMode ? '视频音轨' : resource.completeness === 'preview' ? '平台试听' : resource.completeness === 'full' ? '完整音频' : '完整性未知' }}
-                      </span>
-                    </div>
                   </div>
-                </div>
-                <label v-if="resource.completeness === 'preview'" class="checkbox-field">
-                  <input v-model="allowPreview" type="checkbox" /><span>我知道这是试听，保存此片段</span>
-                </label>
-                <p v-if="resource.videoAudioMode === 'combined'" class="format-note">{{ resource.note }}</p>
-                <div class="extraction-options">
-                  <div class="extraction-controls">
-                    <label>保存格式
+                  <div class="resource-actions">
+                    <span class="completeness-chip" :class="resource.completeness">
+                      <AudioLines :size="15" aria-hidden="true" />{{ resource.audioSource === 'douyin' ? '抖音原声' : resource.videoAudioMode ? '视频音轨' : resource.completeness === 'preview' ? '平台试听' : resource.completeness === 'full' ? '完整音频' : '完整性未知' }}
+                    </span>
+                    <label class="result-format">
+                      <span class="sr-only">保存格式</span>
                       <select v-model="format" :disabled="busy">
                         <option value="original">原音轨</option>
                         <option value="mp3">MP3</option>
                         <option value="m4a">M4A</option>
                       </select>
                     </label>
-                    <label>来源音质
-                      <select v-model="choice" :disabled="busy">
-                        <option v-for="c in resource.choices" :key="c.id" :value="c.id">{{ c.label }}</option>
-                      </select>
-                    </label>
-                  </div>
-                  <div class="extraction-save-row">
-                    <ExtractionDestination
-                      :key="resource.token + recoveryJobId"
-                      v-model="audioDestination" v-model:ready="audioDestinationReady"
-                      kind="audio" :original="recoveryJobId ? (recoveryDestination || '沿用任务原目录') : undefined"
-                      :disabled="busy" :request="api"
-                    />
-                    <button class="primary save-button" :disabled="busy || !audioDestinationReady || (!allowPreview && resource.completeness === 'preview')" @click="createJob">
-                      <ArrowDownToLine :size="19" />{{ recoveryJobId ? '确认并继续' : resource.completeness === 'preview' ? '保存试听片段' : '提取并保存' }}
+                    <button class="primary save-button" :disabled="busy || !audioDestinationReady" @click="createJob">
+                      <ArrowDownToLine :size="17" aria-hidden="true" />{{ recoveryJobId ? '确认并继续' : resource.audioSource === 'douyin' ? '保存原声' : resource.completeness === 'preview' ? '保存试听片段' : '提取并保存' }}
                     </button>
                   </div>
                 </div>
+                <p v-if="resource.videoAudioMode === 'combined'" class="format-note">{{ resource.note }}</p>
                 <div class="resource-secondary">
-                  <details class="result-options">
-                    <summary>音质说明</summary>
-                    <div class="result-option-content">
-                      <p v-if="resource.note && resource.videoAudioMode !== 'combined'" class="format-note">{{ resource.note }}</p>
-                      <p class="format-note">{{ format === 'original' ? '按来源编码选择保存格式，尽量保留原有音质。' : '转换格式不会提高来源音质。' }}</p>
-                    </div>
-                  </details>
-                  <SongOptions v-if="!recoveryJobId"
-                    :resource="resource" :choice="choice" :format="format" :revision="completeJobs.length"
-                    :skip-match="!!audioDestination" @metadata="songMetadata = $event" @force="forceCopy = $event"
+                  <ExtractionDestination
+                    :key="resource.token + recoveryJobId"
+                    v-model:ready="audioDestinationReady"
+                    kind="audio" read-only :original="recoveryJobId ? (recoveryDestination || '沿用任务原目录') : undefined"
+                    :request="api"
                   />
+                  <button v-if="!recoveryJobId" type="button" class="text-button song-options-toggle"
+                    :aria-expanded="songOptionsOpen" aria-controls="extraction-song-options" @click="songOptionsOpen = !songOptionsOpen">
+                    <Tags :size="15" aria-hidden="true" />整理歌曲信息<ChevronDown :size="13" aria-hidden="true" />
+                  </button>
                 </div>
+                <SongOptions v-if="!recoveryJobId" :key="resource.token"
+                  :resource="resource" :choice="choice" :format="format" :revision="completeJobs.length"
+                  :expanded="songOptionsOpen" @metadata="songMetadata = $event" @force="forceCopy = $event"
+                />
               </template>
               <div v-else class="result-empty">
                 <div class="record-symbol" aria-hidden="true">
                   <span></span>
                 </div>
-                <h3>等待添加一段声音</h3>
-                <p>解析成功后，在这里查看资源、<br />选择音质与保存格式。</p>
-                <div class="supported">
+                <h3>{{ mode === 'file' ? (uploading ? '正在读取本地文件…' : '等待添加本地文件') : '等待添加一段声音' }}</h3>
+                <p v-if="mode === 'file' && !uploading">选择或拖入文件后，即可查看音轨。</p>
+                <p v-else-if="mode === 'link'">解析链接后，即可提取音频。</p>
+                <div v-if="mode === 'link'" class="supported">
                   <span><SourceIcon platform="qishui" />汽水音乐</span>
                   <span><SourceIcon platform="douyin" />抖音原声</span>
                   <span><SourceIcon platform="bilibili" />B 站</span>
@@ -1248,6 +1257,7 @@ onUnmounted(() => {
           @refresh="refresh"
           @create="page = 'workspace'"
           @review-song="selectDiscoveredSong"
+          @discovery-complete="finishDiscoveryBatch"
         >
           <template #recovery><TaskRecovery v-model:expanded="recoveryOpen" :request="api" @changed="refresh(); refreshVideos()" @review="reviewRecoverySource" /></template>
         </TasksWorkspace>
@@ -1275,7 +1285,7 @@ onUnmounted(() => {
         <section v-if="page === 'workspace'" class="jobs-section" aria-labelledby="jobs-title">
           <div class="section-heading">
             <div class="title-with-count"><h2 id="jobs-title">最近提取</h2><span>共 {{ jobs.length }} 项</span></div>
-            <button v-if="jobs.length" class="text-button" @click="showTasks()">查看全部<ArrowRight :size="20" /></button>
+            <button v-if="jobs.length" class="text-button" @click="showTasks('audio')">查看全部<ArrowRight :size="20" /></button>
           </div>
           <div v-if="!jobs.length" class="jobs-empty">
             <span class="empty-icon"><FileAudio :size="23" :stroke-width="1.5" /></span>
@@ -1510,9 +1520,6 @@ onUnmounted(() => {
         <button aria-label="上一首" :disabled="!playableJobs.length" @click="playerMove(-1)"><SkipBack :size="20" /></button>
         <button class="player-toggle" :aria-label="playerPaused ? '播放' : '暂停'" :disabled="!playableJobs.length" @click="togglePlayer"><Play v-if="playerPaused" :size="21" /><Pause v-else :size="21" /></button>
         <button aria-label="下一首" :disabled="!playableJobs.length" @click="playerMove(1)"><SkipForward :size="20" /></button>
-        <button class="player-repeat" :class="{ enabled: repeatMode !== 'off' }" :aria-label="'播放模式：' + repeatLabel" :title="'播放模式：' + repeatLabel" @click="cycleRepeat">
-          <Repeat1 v-if="repeatMode === 'one'" :size="21" /><Repeat v-else :size="21" />
-        </button>
       </div>
       <div class="player-progress"><span>{{ playerPosition ? time(playerPosition) : '00:00' }} / {{ playerDuration ? time(playerDuration) : '00:00' }}</span><input type="range" aria-label="播放进度" min="0" :max="playerDuration || 0" step="0.1" :value="playerPosition" :style="{ '--range-fill': (playerDuration ? playerPosition / playerDuration * 100 : 0) + '%' }" :disabled="!playerDuration" @input="seekPlayer" /></div>
       <div class="player-volume">
@@ -1522,7 +1529,13 @@ onUnmounted(() => {
         <input type="range" aria-label="音量" min="0" max="1" step="0.01" :value="playerVolume" :style="{ '--range-fill': (playerMuted ? 0 : playerVolume * 100) + '%' }" @input="changePlayerVolume" />
       </div>
       <div class="player-tools">
-        <SleepTimer v-if="desktop" />
+        <div class="player-repeat-control">
+          <button type="button" class="player-repeat" :class="{ enabled: repeatMode !== 'off' }"
+            :aria-label="'播放模式：' + repeatLabel" :title="repeatLabel" @click="cycleRepeat">
+            <Repeat1 v-if="repeatMode === 'one'" :size="21" aria-hidden="true" /><Repeat v-else :size="21" aria-hidden="true" />
+          </button>
+          <span class="player-repeat-notice" role="status">{{ repeatNotice }}</span>
+        </div>
         <button class="player-queue-toggle" aria-label="播放队列" :aria-expanded="playbackList" popovertarget="playback-list"><ListMusic :size="24" /></button>
       </div>
       <section id="playback-list" ref="queuePopover" popover class="player-queue" aria-label="播放队列" @toggle="syncPlaybackList">

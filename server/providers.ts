@@ -25,6 +25,7 @@ const sourceDomains = [
   "mountaintoys.cn",
   "hdslb.com",
   "douyin.com",
+  "douyinstatic.com",
   "qishui.com",
   "iesdouyin.com",
   "amemv.com",
@@ -222,7 +223,13 @@ export function buildQishuiPlan(
     expiresAt: expiries.length ? Math.min(...expiries) : undefined,
   };
 }
-export async function resolveQishui(input: string, cookie = ""): Promise<Plan> {
+type QishuiResolveOptions = {
+  signal?: AbortSignal;
+  preview?: boolean;
+  douyinOriginal?: (id: string, signal?: AbortSignal) => Promise<Plan>;
+};
+
+export async function resolveQishui(input: string, cookie = "", options?: QishuiResolveOptions): Promise<Plan> {
   const r = await platformFetch(extractLink(input));
   const trackId =
     new URL(r.url).searchParams.get("track_id") ||
@@ -233,7 +240,7 @@ export async function resolveQishui(input: string, cookie = ""): Promise<Plan> {
         ? "这是汽水歌单。可以先打开歌单，再选择要提取的歌曲。"
         : "没有找到歌曲编号，请复制单首歌曲的分享链接。",
     );
-  return resolveQishuiTrack(trackId, cookie);
+  return resolveQishuiTrack(trackId, cookie, options);
 }
 function accountPlayerMatches(track: any, player: any) {
   const mediaId = String(player?.media_id || "");
@@ -268,19 +275,22 @@ async function readQishuiAccountPlan(
 }
 
 export async function resolveQishuiTrack(
-  trackId: string, cookie = "", { signal, preview = false }: { signal?: AbortSignal; preview?: boolean } = {},
+  trackId: string, cookie = "", { signal, preview = false, douyinOriginal }: QishuiResolveOptions = {},
 ): Promise<Plan> {
   if (!/^[1-9]\d{5,24}$/.test(trackId)) throw new Error("歌曲编号无效。");
   let track: any;
   let base: Plan | undefined;
   let publicError: unknown;
+  let originalCandidate = false;
   try {
     const seo = await (await platformFetch(
       `https://beta-luna.douyin.com/luna/h5/seo_track?track_id=${trackId}&device_platform=web`,
       { signal },
     )).json() as any;
+    originalCandidate = seo.status_code === 1000091;
     if (seo.seo_track?.track?.id === trackId) {
       track = seo.seo_track.track;
+      originalCandidate ||= track.media_type === "ugc_clip";
       base = buildQishuiPlan(track, seo.track_player, "seo");
     }
   } catch (error) {
@@ -307,13 +317,52 @@ export async function resolveQishuiTrack(
       base.resource.note += accountError
         ? " 账号取流暂未成功，可检查登录状态后重试。"
         : " 本次账号请求未取得更完整的可用资源。";
-    } else if (accountError) {
-      throw accountError;
-    }
+    } else if (accountError) publicError = accountError;
   }
   if (base) return base;
+  if (originalCandidate && douyinOriginal) {
+    try { return await douyinOriginal(trackId, signal); }
+    catch {
+      signal?.throwIfAborted();
+      if (cookie) {
+        try {
+          const plan = await readQishuiAccountPlan(track || { id: trackId, name: "抖音原声" }, "ugc_clip", cookie, signal);
+          if (plan) {
+            Object.assign(plan.resource, { audioSource: "douyin", completeness: "preview", note: "使用同编号的抖音原声音频。" });
+            return plan;
+          }
+        } catch { signal?.throwIfAborted(); }
+      }
+      throw new Error("汽水和抖音暂未返回这段原声的可用音频。");
+    }
+  }
   if (publicError && (!track || !preview)) throw publicError;
   throw new Error(preview ? "汽水暂未提供这首歌的试听资源。" : "汽水没有返回该歌曲的可用资源。");
+}
+
+export function douyinOriginalPlan(id: string, payload: any): Plan | undefined {
+  const music = payload?.music_info;
+  if (payload?.status_code !== 0 || music?.id_str !== id ||
+      typeof music.title !== "string" || !music.title.trim() || music.is_restricted === true) return;
+  const urls = Array.isArray(music.play_url?.url_list) ? music.play_url.url_list.filter((value: unknown): value is string => {
+    if (typeof value !== "string") return false;
+    try { return allowedUrl(value).protocol === "https:"; } catch { return false; }
+  }) : [];
+  const [url, ...backupUrls] = [...new Set<string>(urls)];
+  if (!url) return;
+  const duration = Number(music.duration);
+  return {
+    resource: {
+      token: randomUUID(), sourceId: id, platform: "qishui", audioSource: "douyin",
+      title: music.title.replace(/^@(?=.+)/, ""), artist: String(music.author || music.owner_nickname || ""),
+      cover: coverOf(music.cover_large || music.cover_medium),
+      duration: Number.isFinite(duration) && duration > 0 ? duration : 0,
+      completeness: "preview", note: "使用同编号的抖音原声音频。",
+      choices: [{ id: "original", label: "抖音原声", format: "audio", quality: "douyin_original" }],
+    },
+    streams: [{ id: "original", url, backupUrls, format: "audio", headers: { Referer: "https://www.douyin.com/", "User-Agent": UA } }],
+    createdAt: Date.now(),
+  };
 }
 export function planNeedsRefresh(plan: Plan, now = Date.now()) {
   return (

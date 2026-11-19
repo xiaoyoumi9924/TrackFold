@@ -70,15 +70,15 @@ try{
   },'discovery batch did not finish');
  }
  await api('/api/queue',{paused:true});
- const created=await api(discovery,{title:'自动保存测试',format:'m4a',tracks});
+ const created=await api(discovery,{title:'自动保存测试',format:'m4a',allowPreview:true,tracks});
  await api('/api/storage',{outputDir:output});
  await api('/api/library/settings',{naming:'artist-title',embedCover:true});
  const batch=await finishedBatch(created.id);
- assert.deepEqual(batch.items.map(item=>item.status),['failed','submitted','ready','ready','submitted']);
+ assert.deepEqual(batch.items.map(item=>item.status),['failed','submitted','submitted','ready','submitted']);
  assert.deepEqual(batch.items.slice(2,4).map(item=>item.resource.completeness),['preview','unknown']);
  const submitted=batch.items.filter(item=>item.jobId).map(item=>item.jobId);
  const queued=(await api('/api/jobs')).filter(job=>submitted.includes(job.id));
- assert.equal(queued.length,2);
+ assert.equal(queued.length,3);
  for(const job of queued) {
   assert.equal(job.status,'queued');
   assert.equal(job.format,'m4a');
@@ -93,18 +93,22 @@ try{
  const saved=await waitFor(async()=>{
   const jobs=await api('/api/jobs');
   const full=jobs.find(job=>job.id===batch.items[1].jobId);
+  const excerpt=jobs.find(job=>job.id===batch.items[2].jobId);
   const refreshed=jobs.find(job=>job.id===batch.items[4].jobId);
-  return full?.status==='completed' && refreshed?.status==='failed' && {full,refreshed,jobs};
+  return full?.status==='completed' && excerpt?.status==='completed' && refreshed?.status==='failed' && {full,excerpt,refreshed,jobs};
  },'expected full download and refusal after completeness downgrade');
  assert.ok(saved.full.filePath.startsWith(destination+path.sep));
  assert.ok(saved.full.filePath.endsWith('.m4a'));
  assert.equal(saved.refreshed.filePath,undefined);
  assert.equal(saved.refreshed.needsReview,true);
- assert.equal(saved.jobs.filter(job=>tracks.some(track=>track.id===job.sourceId)).length,2);
+ assert.equal(saved.jobs.filter(job=>tracks.some(track=>track.id===job.sourceId)).length,3);
+ assert.equal(saved.excerpt.completeness,'preview');
+ assert.ok(saved.excerpt.filePath.startsWith(destination+path.sep));
+ execFileSync('ffmpeg',['-v','error','-i',saved.excerpt.filePath,'-f','null','-']);
  execFileSync('ffmpeg',['-v','error','-i',saved.full.filePath,'-f','null','-']);
  const existing=await api(discovery,{title:'复用已保存文件',format:'m4a',tracks:[tracks[1]]});
  assert.equal((await finishedBatch(existing.id)).items[0].jobId,saved.full.id);
- console.log('PASS discovery batch: real media saved using defaults; previews and unknown tracks require review; reused queued and existing jobs');
+ console.log('PASS discovery batch: full audio and previews saved using defaults, unknown tracks require review, reused queued and existing jobs');
  const preview=await fetch(base+'/api/discovery/preview',{
   method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:'7420006432714688538'}),
  });

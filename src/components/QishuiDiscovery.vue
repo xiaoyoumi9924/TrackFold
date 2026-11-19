@@ -67,6 +67,7 @@ function switchTab(next: typeof tab.value) {
   tab.value = next;
   items.value = [];
   loaded.value = false;
+  if (next === "mine") void load();
 }
 async function fetchList<T>(operation: (signal: AbortSignal) => Promise<T>, apply: (data: T) => void) {
   cancelLoad();
@@ -116,7 +117,7 @@ async function submit() {
   submittingController = controller;
   try {
     const batch = await json<Batch>("/api/discovery/batches", post({
-      tracks: [...selected.value.values()], title: musicTitle.value, format: savedOutputFormat(),
+      tracks: [...selected.value.values()], title: musicTitle.value, format: savedOutputFormat(), allowPreview: true,
     }, controller.signal));
     if (controller.signal.aborted) return;
     selected.value.clear();
@@ -171,6 +172,7 @@ const time = (n: number) => n ? `${Math.floor(n / 60)}:${String(Math.floor(n % 6
     <div class="discovery-tabs" role="group" aria-label="汽水音乐功能">
       <button :disabled="submitting" :aria-pressed="tab === 'search'" @click="switchTab('search')">搜索歌曲</button>
       <button :disabled="submitting" :aria-pressed="tab === 'mine'" @click="switchTab('mine')">我的歌单</button>
+      <button :disabled="submitting" @click="emit('settings')">账号设置</button>
     </div>
     <button v-if="playlistInput" class="text-button discovery-back" :disabled="submitting" @click="closePlaylist">
       <ArrowLeft :size="16" aria-hidden="true" />{{ tab === "mine" ? "返回歌单" : "返回搜索" }}
@@ -180,9 +182,9 @@ const time = (n: number) => n ? `${Math.floor(n / 60)}:${String(Math.floor(n % 6
       <input id="qishui-keyword" v-model="keyword" maxlength="100" placeholder="输入歌名或歌手" />
       <button class="primary" :disabled="busy || !keyword.trim()"><LoaderCircle v-if="busy" :size="16" class="spin" /><Search v-else :size="16" />搜索</button>
     </form>
-    <div v-else-if="!playlistInput" class="discovery-account">
-      <button class="secondary" :disabled="busy" @click="load"><LoaderCircle v-if="busy" :size="16" class="spin" />{{ loaded ? "刷新歌单" : "读取我的歌单" }}</button>
-      <button class="text-button" @click="emit('settings')">账号设置</button>
+    <div v-else-if="!playlistInput && (busy || error || (loaded && !complete))" class="discovery-account">
+      <p v-if="busy" role="status">正在读取歌单…</p>
+      <button v-else-if="error || (loaded && !complete)" class="secondary" @click="load">重新读取</button>
     </div>
     <p v-if="busy && playlistInput" role="status">正在读取歌单…</p>
     <p v-if="error" class="discovery-error" role="alert">{{ error }}</p>
@@ -211,7 +213,7 @@ const time = (n: number) => n ? `${Math.floor(n / 60)}:${String(Math.floor(n % 6
       <button class="primary discovery-submit" :disabled="!selected.size || submitting" @click="submit">
         <LoaderCircle v-if="submitting" :size="16" class="spin" /><ListPlus v-else :size="17" />解析并下载
       </button>
-      <p class="discovery-save-help">完整音频按默认设置保存，试听和完整性未知的歌曲待确认。</p>
+      <p class="discovery-save-help">完整音频和平台试听会自动保存。</p>
     </div>
 
     <div v-if="previewTrack" class="discovery-preview" aria-label="在线试听">
@@ -254,8 +256,9 @@ const time = (n: number) => n ? `${Math.floor(n / 60)}:${String(Math.floor(n % 6
 .discovery { padding: 19px 0; }
 .discovery h2 { margin: 0; font-size: 17px; }
 .discovery p { color: var(--muted); line-height: 1.5; margin: 7px 0; }
-.discovery-tabs { display: flex; gap: 16px; margin: 10px 0 15px; border-bottom: 1px solid var(--line); }
+.discovery-tabs { display: flex; flex-wrap: wrap; column-gap: 16px; margin: 10px 0 15px; border-bottom: 1px solid var(--line); }
 .discovery-tabs button { padding: 9px 2px; color: var(--muted); white-space: nowrap; }
+.discovery-tabs button:hover { color: var(--ink); }
 .discovery-tabs button[aria-pressed="true"] { color: var(--accent); box-shadow: inset 0 -2px var(--accent); font-weight: 600; }
 .discovery .search-row, .discovery-account, .discovery-list-heading, .discovery-list-title { display: flex; align-items: center; gap: 10px; }
 .discovery-account, .discovery-list-heading { justify-content: space-between; }

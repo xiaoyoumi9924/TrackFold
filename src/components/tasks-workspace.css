@@ -67,6 +67,7 @@
 .task-discovery h2 { margin: 0; font-size: 1rem; color: var(--ink); }
 .task-discovery h2 button { display: flex; align-items: center; justify-content: space-between; min-height: 42px; width: 100%; text-align: left; }
 .task-discovery h2 button[aria-expanded="true"] svg { transform: rotate(180deg); }
+.task-discovery-issues { margin-inline-start: 7px; color: var(--warm-error); font-size: 12px; font-weight: 500; }
 #task-discovery-content { border-top: 1px solid var(--line); padding-block: 12px; }
 .task-recovery-heading { justify-content: space-between; }
 .task-recovery-heading h2 { margin: 0; font-size: 1rem; color: var(--ink); }
@@ -93,12 +94,18 @@
 .task-search input { min-width: 0; width: min(235px, 54vw); padding: 5px; border: 0; background: transparent; color: var(--ink); }
 .task-feedback ul { padding-left: 20px; margin-block: 0; }
 
-.task-list {
+.task-results {
+  display: flex;
+  flex-direction: column;
   border: 1px solid #493a35;
   border-radius: 16px;
   background: #241c1bed;
+  overflow: hidden;
+}
+.task-list {
   scrollbar-color: #745c54 transparent;
 }
+.task-list:focus-visible { outline-offset: -3px; }
 @media (min-width: 781px) {
   .tasks-workspace {
     display: flex;
@@ -106,12 +113,12 @@
     height: var(--workspace-height);
     min-height: min-content;
   }
-  .task-list:has(.task-row) {
+  .task-results:has(.task-row) {
     flex: 1;
     min-height: 180px;
-    overflow: auto;
     contain: size;
   }
+  .task-list { flex: 1; overflow: auto; }
 }
 .task-table-head, .tasks-workspace .task-row {
   display: grid;
@@ -195,7 +202,6 @@
 .task-empty { display: flex; align-items: center; gap: 13px; padding: clamp(16px, 2vw, 30px); color: var(--muted); }
 .task-empty h2 { color: var(--ink); }
 .task-empty button { margin-left: auto; flex: none; }
-.task-session-summary { color: var(--muted); font-size: 13px; margin: 12px 4px 0; }
 
 .task-row-menu {
   position: fixed;

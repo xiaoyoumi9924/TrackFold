@@ -6,10 +6,11 @@ import type { StorageKind, StorageSettings } from "../../shared/types";
 const props = defineProps<{
   kind: StorageKind;
   disabled?: boolean;
+  readOnly?: boolean;
   original?: string;
   request: (url: string, options?: RequestInit) => Promise<unknown>;
 }>();
-const override = defineModel<string>({ required: true });
+const override = defineModel<string>({ default: "" });
 const ready = defineModel<boolean>("ready", { required: true });
 const settings = ref<StorageSettings>();
 const pending = ref(false);
@@ -70,15 +71,17 @@ watch(() => props.original, value => { if (value === undefined) void load(); }, 
 </script>
 
 <template>
-  <div class="extraction-destination">
+  <div class="extraction-destination" :class="{ 'read-only': readOnly }">
     <div class="extraction-location">
       <FolderOpen :size="19" aria-hidden="true" />
       <div class="extraction-folder">
         <small>{{ original ? "原保存位置" : "保存到" }}</small>
         <span :title="directory">{{ directory || (pending ? "正在读取…" : "保存位置暂不可用") }}</span>
       </div>
-      <button v-if="!original && settings && !editing" type="button" class="text-button" :disabled="disabled || pending" @click="choose">本次更改</button>
-      <button v-if="override && !editing" type="button" class="text-button" :disabled="disabled || pending" @click="override = ''; error = ''">恢复默认</button>
+      <div v-if="!readOnly && !original && settings && !editing" class="extraction-location-actions">
+        <button type="button" class="text-button" :disabled="disabled || pending" @click="choose">本次更改</button>
+        <button v-if="override" type="button" class="text-button" :disabled="disabled || pending" @click="override = ''; error = ''">恢复默认</button>
+      </div>
     </div>
     <form v-if="editing" class="extraction-path-editor" @submit.prevent="submitPath">
       <input ref="pathInput" v-model="draft" aria-label="本次保存文件夹" placeholder="填写文件夹的完整路径" spellcheck="false" :disabled="pending" />
@@ -98,9 +101,15 @@ watch(() => props.original, value => { if (value === undefined) void load(); }, 
 .extraction-folder { min-width: 0; font-size: 13px; line-height: 1.35; }
 .extraction-folder small { display: block; color: var(--muted); font-size: 11px; }
 .extraction-folder span { display: block; overflow-wrap: anywhere; }
-.extraction-location button { flex: none; }
+.extraction-location-actions { flex: none; display: flex; gap: 8px; align-items: center; }
 .extraction-path-editor { flex-wrap: wrap; margin-top: 6px; }
 .extraction-path-editor input { flex: 1 1 150px; min-width: 0; min-height: 34px; padding: 4px 8px; background: var(--field-surface); border: 1px solid var(--field-border); border-radius: 8px; color: var(--ink); }
 .extraction-path-editor button { white-space: nowrap; }
 .extraction-destination [role="alert"] { color: var(--warm-error); overflow-wrap: anywhere; }
+.read-only { flex-basis: 150px; color: var(--muted); }
+.read-only .extraction-location { gap: 6px; }
+.read-only .extraction-location > svg { width: 15px; height: 15px; }
+.read-only .extraction-folder { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
+.read-only .extraction-folder small { white-space: nowrap; }
+.read-only .extraction-folder span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

@@ -1,6 +1,6 @@
-import type { BrowserContext } from "playwright";
+import type { BrowserContext, Page } from "playwright";
 import { rm } from "node:fs/promises";
-import { findVideo } from "./providers.ts";
+import { douyinOriginalPlan, findVideo, type Plan } from "./providers.ts";
 import { interpretAccount, type Inspection } from "./accounts.ts";
 import { douyinBrowserProfile, launchDouyinBrowser } from "./douyin-browser.ts";
 let context: BrowserContext | undefined;
@@ -102,6 +102,38 @@ export async function resolveInBrowser(
     activeParses--;
   }
 }
+export async function resolveDouyinOriginalInBrowser(profile: string, id: string, cookie = "", signal?: AbortSignal): Promise<Plan> {
+  const context = await browserContext(profile);
+  signal?.throwIfAborted();
+  activeParses++;
+  let page: Page | undefined;
+  const abort = () => { void page?.close().catch(() => {}); };
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    await applyCookie(context, cookie);
+    page = await context.newPage();
+    signal?.throwIfAborted();
+    let plan: Plan | undefined;
+    const capture = page.waitForResponse(async response => {
+      const url = new URL(response.url());
+      if (url.origin !== "https://www.douyin.com" || url.pathname !== "/aweme/v1/web/music/detail/" || !response.ok()) return false;
+      try {
+        plan ??= douyinOriginalPlan(id, await response.json());
+        return !!plan;
+      } catch { return false; }
+    }, { timeout: 16000 }).catch(() => undefined);
+    await page.goto(`https://www.douyin.com/music/${id}`, { waitUntil: "domcontentloaded", timeout: 16000 });
+    await capture;
+    signal?.throwIfAborted();
+    if (!plan) throw new Error("抖音未返回同编号的可用原声。");
+    return plan;
+  } finally {
+    signal?.removeEventListener("abort", abort);
+    await page?.close().catch(() => {});
+    activeParses--;
+  }
+}
+
 export async function inspectDouyinLogin(
   profile: string,
   cookie = "",

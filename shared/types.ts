@@ -40,6 +40,7 @@ export interface Resource {
   completeness: Completeness;
   note: string;
   videoAudioMode?: "audio-only" | "combined";
+  audioSource?: "douyin";
   choices: MediaChoice[];
 }
 export interface Job {
@@ -47,6 +48,7 @@ export interface Job {
   title: string;
   artist: string;
   platform: Platform;
+  audioSource?: Resource["audioSource"];
   status:
     | "queued"
     | "downloading"
@@ -137,7 +139,11 @@ export interface BatchItem {
   jobId?: string;
   duplicateOf?: string;
 }
-export type DiscoverySaveOptions = LibrarySettings & { format: "mp3" | "m4a" | "original"; outputDir: string };
+export type DiscoverySaveOptions = LibrarySettings & {
+  format: "mp3" | "m4a" | "original";
+  outputDir: string;
+  allowPreview?: boolean;
+};
 
 export interface Batch {
   id: string;

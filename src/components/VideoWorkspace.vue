@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { AudioLines, Clipboard, Download, Ellipsis, Film, Folder, Link2, LoaderCircle, Pause, Play, RotateCw, Square, Video, X } from "@lucide/vue";
-import type { AudioQueueState, Resource, VideoPreview, VideoTask, VideoTaskAction } from "../../shared/types";
+import { ArrowRight, AudioLines, Check, Clipboard, Download, Ellipsis, Film, Folder, Link2, LoaderCircle, Play, RotateCw, Square, Video, X } from "@lucide/vue";
+import type { Resource, VideoPreview, VideoTask, VideoTaskAction } from "../../shared/types";
 import ExtractionDestination from "./ExtractionDestination.vue";
+import SourceIcon from "./SourceIcon.vue";
 import VideoCover from "./VideoCover.vue";
 import "./video-workspace.css";
 
@@ -11,8 +12,6 @@ const props = defineProps<{
   tasks: VideoTask[];
   busyTask: string;
   loadError: string;
-  queue: AudioQueueState | null;
-  queueBusy: boolean;
   request: (url: string, options?: RequestInit) => Promise<unknown>;
 }>();
 const emit = defineEmits<{
@@ -21,7 +20,6 @@ const emit = defineEmits<{
   action: [action: VideoTaskAction, task: VideoTask];
   audio: [resource: Resource, input: string];
   tasks: [];
-  pauseQueue: [paused: boolean];
   recovery: [];
 }>();
 
@@ -167,44 +165,38 @@ async function openAudio() {
           </button>
           <div v-else class="video-preview-cover"><VideoCover :src="result.cover" /></div>
           <div class="video-preview-info">
-            <h3>{{ result.title || "视频" }}</h3>
-            <p>
-              <span v-if="result.duration">{{ time(result.duration) }}</span>
-              <span v-if="result.duration && result.platform" aria-hidden="true"> · </span>
+            <h3 :title="result.title">{{ result.title || "视频" }}</h3>
+            <div class="video-preview-meta">
               <span v-if="result.platform">{{ platformLabels[result.platform] }}</span>
-            </p>
+              <span v-if="result.duration">{{ time(result.duration) }}</span>
+              <span>MP4</span>
+              <span v-if="result.height">{{ result.height }}p</span>
+            </div>
           </div>
         </div>
-        <div v-if="result" class="extraction-options">
-          <div class="extraction-controls video-output-specs">
-            <span>保存格式 <strong>MP4</strong></span>
-            <span>来源画质 <strong>{{ result.height ? `${result.height}p` : "由平台提供" }}</strong></span>
-          </div>
-          <div class="extraction-save-row">
-            <ExtractionDestination v-if="active && !submittedId" v-model="videoDestination" v-model:ready="videoDestinationReady"
-              kind="video" :disabled="submitting" :request="request" />
-            <div class="video-save-action">
-              <button
-                v-if="currentTask?.status === 'failed'"
-                class="secondary"
-                type="button"
-                :disabled="!!busyTask"
-                @click="currentTask.interrupted ? $emit('recovery') : $emit('action', 'retry', currentTask)"
-              ><RotateCw :size="19" aria-hidden="true" />{{ currentTask.interrupted ? "查看恢复" : "重试" }}</button>
-              <button
-                v-else
-                class="primary video-primary"
-                type="button"
-                :disabled="submitting || !!submittedId || !videoDestinationReady"
-                @click="save"
-              >
-                <Download :size="22" aria-hidden="true" />
-                {{ submitting ? "正在添加…" : currentTask?.status === "completed" ? "已保存" : currentTask?.status === "cancelled" ? "已取消" : submittedId ? "已加入任务" : "保存视频" }}
-              </button>
-              <button v-if="result.platform === 'bilibili'" type="button" class="secondary" :disabled="openingAudio" @click="openAudio">
-                <AudioLines :size="19" aria-hidden="true" />{{ openingAudio ? "正在打开…" : "提取音频" }}
-              </button>
-            </div>
+        <div v-if="result" class="video-result-footer">
+          <ExtractionDestination v-if="active && !submittedId" :key="result.id" class="video-destination"
+            v-model="videoDestination" v-model:ready="videoDestinationReady"
+            kind="video" :disabled="submitting" :request="request" />
+          <span v-if="submittedId && currentTask?.status !== 'failed'" class="video-save-status"
+            :class="{ saved: currentTask?.status === 'completed' && currentTask.fileExists !== false }" role="status">
+            <Check v-if="currentTask?.status === 'completed' && currentTask.fileExists !== false" :size="17" aria-hidden="true" />
+            {{ currentTask?.fileExists === false ? "文件缺失" : currentTask?.status === "completed" ? "已保存" : currentTask?.status === "cancelled" ? "已取消" : "已加入任务" }}
+          </span>
+          <div class="video-save-action">
+            <button v-if="currentTask && ['completed', 'failed', 'cancelled'].includes(currentTask.status)"
+              type="button" class="text-button" :disabled="!!busyTask" @click="$emit('action', 'remove', currentTask)">移除记录</button>
+            <button v-if="result.platform === 'bilibili'" type="button" class="secondary" :disabled="openingAudio" @click="openAudio">
+              <AudioLines :size="17" aria-hidden="true" />{{ openingAudio ? "正在打开…" : "提取音频" }}
+            </button>
+            <button v-if="currentTask?.status === 'failed'" class="secondary" type="button" :disabled="!!busyTask"
+              @click="currentTask.interrupted ? $emit('recovery') : $emit('action', 'retry', currentTask)">
+              <RotateCw :size="17" aria-hidden="true" />{{ currentTask.interrupted ? "查看恢复" : "重试" }}
+            </button>
+            <button v-if="!submittedId" class="primary video-save-button" type="button"
+              :disabled="submitting || !videoDestinationReady" @click="save">
+              <Download :size="18" aria-hidden="true" />{{ submitting ? "正在添加…" : "保存视频" }}
+            </button>
           </div>
         </div>
         <div v-if="!result" class="video-preview-empty" role="status">
@@ -218,18 +210,11 @@ async function openAudio() {
     <section class="video-recent" aria-labelledby="video-recent-title">
       <div class="section-heading video-recent-heading">
         <h2 id="video-recent-title">最近视频任务</h2>
-        <div class="video-queue-controls">
-          <span v-if="queue" role="status">视频队列 {{ queue.active }}/{{ queue.limit }}<template v-if="queue.paused"> · 已暂停</template><template v-if="queue.waiting"> · {{ queue.waiting }} 项等待</template></span>
-          <button v-if="queue" class="secondary" :disabled="queueBusy" @click="$emit('pauseQueue', !queue.paused)">
-            <Play v-if="queue.paused" :size="15" /><Pause v-else :size="15" />
-            {{ queue.paused ? "继续视频队列" : "暂停视频队列" }}
-          </button>
-          <button v-if="tasks.length" class="text-button" @click="$emit('tasks')">查看全部视频任务</button>
-        </div>
+        <button type="button" class="text-button video-view-all" @click="$emit('tasks')">查看全部<ArrowRight :size="20" aria-hidden="true" /></button>
       </div>
       <p v-if="loadError" class="error-message" role="alert">{{ loadError }}</p>
       <div class="video-task-list">
-        <div class="video-task-head" aria-hidden="true"><span>视频</span><span>状态</span><span>操作</span></div>
+        <div class="video-task-head" aria-hidden="true"><span>视频</span><span>来源</span><span>状态</span><span>操作</span></div>
         <p v-if="!tasks.length" class="video-task-empty">暂无视频任务</p>
         <article v-for="task in tasks.slice(0, 5)" :key="task.id" class="video-result">
           <div class="video-task-title">
@@ -238,6 +223,10 @@ async function openAudio() {
               <span v-if="task.duration" class="video-length"><Video :size="13" aria-hidden="true" />{{ time(task.duration) }}</span>
             </div>
             <h3 :title="task.title">{{ task.title || "视频任务" }}</h3>
+          </div>
+          <div class="video-task-source">
+            <SourceIcon v-if="task.platform" :platform="task.platform" />
+            <span>{{ task.platform ? platformLabels[task.platform] : "—" }}</span>
           </div>
           <div class="video-task-state" :class="task.status" role="status">
             <div class="video-state-label">

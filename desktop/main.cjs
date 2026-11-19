@@ -240,8 +240,15 @@ function validShortcut(value) {
   return value === '' || (typeof value === 'string' && value.length <= 64 &&
     shortcutPattern.test(value) && /^(?:CommandOrControl|Control|Alt)\+/.test(value));
 }
-function activatePaste() {
-  const candidates = clipboard.readText().slice(0, 16000).match(/https?:\/\/[^\s<>"\[\]]+/g) || [];
+async function activatePaste() {
+  let clipboardText = '';
+  try {
+    const value = await clipboard.readText();
+    if (typeof value === 'string') clipboardText = value;
+  } catch {
+    // Clipboard access can fail even when bringing the window forward is possible.
+  }
+  const candidates = clipboardText.slice(0, 16000).match(/https?:\/\/[^\s<>"\[\]]+/g) || [];
   const text = candidates.map(value => value.replace(/[，。；！）)、]+$/, '')).find(value => {
     try {
       const url = new URL(value);

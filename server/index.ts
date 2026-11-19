@@ -6,7 +6,7 @@ import { BilibiliLogin, inspectBilibili } from "./bilibili-login.ts";
 import { VideoQueue, type VideoRecord } from "./video-queue.ts";
 import multer from "multer";
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { mkdirSync, existsSync, lstatSync, statSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { unlink, lstat, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -43,6 +43,7 @@ import {
 } from "./providers.ts";
 import {
   resolveInBrowser,
+  resolveDouyinOriginalInBrowser,
   openLogin,
   closeBrowser,
   inspectDouyinLogin,
@@ -277,12 +278,17 @@ function register(plan: Plan) {
   plans.set(plan.resource.token, plan);
   return plan.resource;
 }
+const douyinOriginal = (id: string, signal?: AbortSignal) =>
+  resolveDouyinOriginalInBrowser(profile, id, accounts.cookie("douyin"), signal);
+function readQishuiTrack(id: string, options: { signal?: AbortSignal; preview?: boolean } = {}) {
+  return resolveQishuiTrack(id, accounts.cookie("qishui"), { ...options, douyinOriginal });
+}
 async function resolveInput(input: string) {
   const url = new URL(extractLink(input));
   if (isBilibiliLink(url)) return register(await resolveBilibiliAudio(url, undefined, accounts.cookie("bilibili")));
   const qishui = /qishui|music\.douyin\.com|beta-luna/.test(input);
   return register(qishui
-    ? await resolveQishui(input, accounts.cookie("qishui"))
+    ? await resolveQishui(input, accounts.cookie("qishui"), { douyinOriginal })
     : await resolveDouyin(input, accounts.cookie("douyin") || "", id => resolveInBrowser(profile, id, accounts.cookie("douyin"))));
 }
 db.exec(
@@ -300,7 +306,7 @@ const batches = new Batches(
       )
       .run(batch.id, JSON.stringify(batch)),
   async (input, trackId) => trackId
-    ? register(await resolveQishuiTrack(trackId, accounts.cookie("qishui")))
+    ? register(await readQishuiTrack(trackId))
     : resolveInput(input),
   (resource, options, batchId, itemId) => {
     const plan = plans.get(resource.token);
@@ -308,6 +314,7 @@ const batches = new Batches(
     const choice = selectEquivalentChoice(plan);
     return createJob({
       token: resource.token, choice, format: options.format, outputDir: options.outputDir,
+      allowPreview: options.allowPreview,
       organization: { naming: options.naming, embedCover: options.embedCover }, reuseActive: true,
     }, batchId, itemId);
   },
@@ -326,8 +333,11 @@ function sourceReview(message: string) {
   return Object.assign(new Error(message), { needsReview: true });
 }
 async function readAudioSource(job: Job) {
-  if (job.platform === "qishui" && job.sourceId) return resolveQishui(
-    `https://music.douyin.com/qishui/share/track?track_id=${job.sourceId}`, accounts.cookie("qishui"));
+  if (job.platform === "qishui" && job.sourceId) {
+    if (job.audioSource === "douyin") return readQishuiTrack(job.sourceId);
+    return resolveQishui(
+      `https://music.douyin.com/qishui/share/track?track_id=${job.sourceId}`, accounts.cookie("qishui"), { douyinOriginal });
+  }
   const url = job.platform === "bilibili" || job.platform === "douyin" ? videoSourceUrl(job.platform, job.sourceId) : undefined;
   if (!url) throw sourceReview("请重新解析链接或重新选择本地文件。");
   if (job.platform === "bilibili") return resolveBilibiliAudio(new URL(url), job.sourceId, accounts.cookie("bilibili"));
@@ -354,6 +364,7 @@ async function refreshForJob(job: Job, signal?: AbortSignal) {
   patch(job, {
     resourceToken: plan.resource.token,
     completeness: plan.resource.completeness,
+    audioSource: plan.resource.audioSource,
   });
   return { plan, choice };
 }
@@ -684,8 +695,10 @@ app.post("/api/jobs/:id/choose-file", async (req, res, next) => {
 app.post("/api/jobs/:id/relocate", async (req, res, next) => {
   const job = jobs.get(String(req.params.id));
   if (!job) return res.status(404).json({ error: "任务不存在。" });
+  if (deletingJobs.has(job.id) || relocatingJobs.has(job.id))
+    return res.status(409).json({ error: "音频记录正在更新，请稍后重试。" });
+  relocatingJobs.add(job.id);
   try {
-    if (deletingJobs.has(job.id)) throw new Error("音频正在删除，请稍后重试。");
     const filePath = await matchingFile(job, req.body.filePath);
     if (jobs.get(job.id) !== job || deletingJobs.has(job.id)) throw new Error("音频记录已变化，请刷新后重试。");
     patch(job, {
@@ -697,7 +710,7 @@ app.post("/api/jobs/:id/relocate", async (req, res, next) => {
     res.json(publicJob(job));
   } catch (e) {
     next(e);
-  }
+  } finally { relocatingJobs.delete(job.id); }
 });
 app.post("/api/settings", async (req, res, next) => {
   try {
@@ -966,9 +979,13 @@ app.post("/api/video/:id/open-folder", async (req, res, next) => {
   } catch (error) { next(error); }
 });
 app.post("/api/video/:id/relocate", async (req, res, next) => {
+  const task = videoQueue.tasks.get(req.params.id);
+  if (task?.status !== "completed" || !task.checksum)
+    return res.status(400).json({ error: "此视频没有可用的文件校验记录，请重新导入。" });
+  if (deletingJobs.has(task.id) || relocatingJobs.has(task.id))
+    return res.status(409).json({ error: "视频记录正在更新，请稍后重试。" });
+  relocatingJobs.add(task.id);
   try {
-    const task = videoQueue.tasks.get(req.params.id);
-    if (task?.status !== "completed" || !task.checksum) throw new Error("此视频没有可用的文件校验记录，请重新导入。");
     const selected = await chooseNative("file", task.filePath ? path.dirname(task.filePath) : storage.describe("video").outputDir);
     if (!selected) return res.json(null);
     if (!await checkedMediaFile(selected, task.checksum, "video")) throw new Error("文件与原视频不一致，请选择备份中的原视频。");
@@ -978,6 +995,7 @@ app.post("/api/video/:id/relocate", async (req, res, next) => {
     videoQueue.save(task);
     res.json(publicVideo(task));
   } catch (error) { next(error); }
+  finally { relocatingJobs.delete(task.id); }
 });
 app.get("/api/videos", (_, res) => res.json([...videoQueue.tasks.values()].reverse().map(publicVideo)));
 app.get("/api/video-current", (_, res) => {
@@ -1017,7 +1035,7 @@ app.post("/api/discovery/preview", async (req, res, next) => {
   res.on("close", disconnected);
   let scratch: string | undefined;
   try {
-    const plan = await resolveQishuiTrack(req.body.id, accounts.cookie("qishui"), { signal, preview: true });
+    const plan = await readQishuiTrack(req.body.id, { signal, preview: true });
     const choice = plan.resource.choices.find(item => item.format === "m4a" || item.format === "aac");
     const stream = plan.streams.find(item => item.id === (choice?.id ?? plan.resource.choices[0]?.id));
     if (!stream) throw new Error("这首歌暂时没有可用的试听资源。");
@@ -1037,14 +1055,19 @@ app.post("/api/discovery/preview", async (req, res, next) => {
     if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => {});
   }
 });
-app.get("/api/discovery/batches", (_, res) => res.json(batches.discoveryHistory()));
+app.get("/api/discovery/batches", (_, res) => res.json(batches.discoveryHistory(id => {
+  const job = jobs.get(id);
+  return !!job && job.status !== "completed";
+})));
 app.post("/api/discovery/batches", (req, res, next) => {
   try {
     if (closing) throw new Error("拾音正在退出。");
-    const { tracks, title, format } = req.body ?? {};
+    const { tracks, title, format, allowPreview } = req.body ?? {};
     if (format !== undefined && format !== "mp3" && format !== "m4a" && format !== "original")
       throw new Error("请选择有效输出格式。");
-    const autoSave = format === undefined ? undefined : { ...organization, format, outputDir: existingDirectory(storage.outputDir) };
+    const autoSave = format === undefined ? undefined : {
+      ...organization, format, outputDir: existingDirectory(storage.outputDir), allowPreview: allowPreview === true,
+    };
     res.status(201).json(batches.createDiscovery(tracks, title, autoSave));
   } catch (error) { next(error); }
 });
@@ -1063,7 +1086,7 @@ app.post("/api/discovery/batches/:id/:action", async (req, res, next) => {
       if (item?.status !== "ready" || !item.track) throw new Error("这首歌曲还未解析完成。");
       const plan = item.resource && plans.get(item.resource.token);
       res.json(plan && !planNeedsRefresh(plan) ? plan.resource
-        : register(await resolveQishuiTrack(item.track.id, accounts.cookie("qishui"))));
+        : register(await readQishuiTrack(item.track.id)));
     } else res.sendStatus(404);
   } catch (error) { next(error); }
 });
@@ -1479,8 +1502,8 @@ function createJob(
     throw new Error("请选择有效输出格式。");
   if (plan.resource.completeness === "preview" && options.allowPreview !== true)
     throw new Error("当前只有试听片段，请明确选择保存试听。");
-  if (discoveryItemId && plan.resource.completeness !== "full")
-    throw new Error("仅完整音频可自动保存。");
+  if (discoveryItemId && plan.resource.completeness === "unknown")
+    throw new Error("音频完整性未知，请先查看资源。");
   const choice = String(options.choice || plan.resource.choices[0]?.id);
   if (!plan.inputFile && !plan.streams.some((s) => s.id === choice))
     throw new Error("音质选项不存在。");
@@ -1529,6 +1552,7 @@ function createJob(
     embedCover: organize.embedCover,
     cover: plan.resource.cover,
     platform: plan.resource.platform,
+    audioSource: plan.resource.audioSource,
     status: "queued",
     progress: 0,
     message: "等待处理",
@@ -1539,7 +1563,7 @@ function createJob(
     sourceId: plan.resource.sourceId,
     selection,
     batchId,
-    requiresFullAudio: discoveryItemId ? true : undefined,
+    requiresFullAudio: discoveryItemId && plan.resource.completeness === "full" ? true : undefined,
     outputDir: destination,
   };
   save(job);
@@ -1650,9 +1674,13 @@ app.post("/api/batches/:id/items/:itemId/retry", (req, res, next) => {
 app.post("/api/batches/:id/items/:itemId/submit", (req, res, next) => {
   try {
     const id = String(req.params.id);
-    const result = batches.submit(id, String(req.params.itemId), (resource) =>
-      createJob({ ...req.body, token: resource.token }, id),
-    );
+    const discovery = batches.get(id).discovery;
+    const result = batches.submit(id, String(req.params.itemId), (resource) => {
+      const refreshed = discovery && req.body?.token ? plans.get(String(req.body.token))?.resource : undefined;
+      if (discovery && req.body?.token && (refreshed?.platform !== resource.platform || refreshed.sourceId !== resource.sourceId))
+        throw new Error("解析结果已失效，请重新查看此歌曲。");
+      return createJob({ ...req.body, token: refreshed?.token ?? resource.token }, id);
+    });
     const job = jobs.get(result.jobId);
     res
       .status(result.created ? 201 : 200)
@@ -1662,6 +1690,8 @@ app.post("/api/batches/:id/items/:itemId/submit", (req, res, next) => {
   }
 });
 const deletingJobs = new Set<string>();
+const relocatingJobs = new Set<string>();
+const retryLocks = new Set<string>();
 const pendingDeletions = new Set<Promise<void>>();
 function requireRecordRemoval(body: unknown) {
   const mode = (body as { mode?: unknown } | undefined)?.mode;
@@ -1684,20 +1714,62 @@ async function runDeletion(id: string, action: () => Promise<void>) {
   }
 }
 
+function audioRemovalBlock(id: string) {
+  if (relocatingJobs.has(id)) return "该音频正在重新关联，请稍后再移除记录。";
+  if (exportingJobs.has(id)) return "该音频正在导出，请稍后再移除记录。";
+  if ([...jobs.values()].some(other => other.parentJobId === id && !["completed", "failed", "cancelled"].includes(other.status)))
+    return "该音频有正在等待或处理的派生任务，请先完成或取消这些任务。";
+}
+
+function removeAudioRecord(id: string) {
+  db.prepare("DELETE FROM jobs WHERE id = ?").run(id);
+  clearPendingOutput.run(id);
+  jobs.delete(id);
+  completionTracker?.remove(id);
+}
+
+function removeVideoRecord(id: string) {
+  videoQueue.remove(id, () => {
+    db.prepare("DELETE FROM video_jobs WHERE id = ?").run(id);
+    clearPendingOutput.run(id);
+  });
+}
+
+function fileDefinitelyMissing(file?: string) {
+  if (!file || !path.isAbsolute(file)) return false;
+  try {
+    // An unavailable drive or inaccessible path is not proof the file was deleted.
+    return !lstatSync(file, { throwIfNoEntry: false }) &&
+      statSync(path.dirname(file), { throwIfNoEntry: false })?.isDirectory() === true;
+  } catch { return false; }
+}
+
+function cleanMissingMediaRecords() {
+  if (closing) return;
+  for (const job of jobs.values()) {
+    if (job.status !== "completed" || deletingJobs.has(job.id)) continue;
+    if (fileDefinitelyMissing(jobFile(job, legacyOutput)) && !audioRemovalBlock(job.id)) removeAudioRecord(job.id);
+  }
+  for (const task of videoQueue.tasks.values()) {
+    const id = task.id;
+    if (task.status !== "completed" || task.detached || deletingJobs.has(id) || relocatingJobs.has(id) || retryLocks.has(id)) continue;
+    if (videoQueue.canRemove(id) && fileDefinitelyMissing(task.filePath)) removeVideoRecord(id);
+  }
+}
+setInterval(() => {
+  try { cleanMissingMediaRecords(); }
+  catch (error) { console.error("自动清理缺失媒体记录失败", error); }
+}, 2500).unref();
+
 app.post("/api/jobs/:id/remove", async (req, res, next) => {
   try {
     const id = String(req.params.id), job = jobs.get(id);
     if (job?.status !== "completed") throw new Error("只能删除已完成的音频。");
     requireRecordRemoval(req.body);
     await runDeletion(id, async () => {
-      if (exportingJobs.has(id))
-        throw new Error("该音频正在导出，请稍后再移除记录。");
-      if ([...jobs.values()].some(other => other.parentJobId === id && !["completed", "failed", "cancelled"].includes(other.status)))
-        throw new Error("该音频有正在等待或处理的派生任务，请先完成或取消这些任务。");
-      db.prepare("DELETE FROM jobs WHERE id = ?").run(id);
-      clearPendingOutput.run(id);
-      jobs.delete(id);
-      completionTracker?.remove(id);
+      const block = audioRemovalBlock(id);
+      if (block) throw new Error(block);
+      removeAudioRecord(id);
     });
     res.json({ ok: true });
   } catch (error) { next(error); }
@@ -1711,16 +1783,12 @@ app.post("/api/video/:id/remove", async (req, res, next) => {
     requireRecordRemoval(req.body);
     await runDeletion(id, async () => {
       if (retryLocks.has(id)) throw new Error("视频正在恢复，请稍后再删除。");
-      if (!videoQueue.canRemove(id)) throw new Error("请等待这条视频任务结束后再删除。");
-      videoQueue.remove(id, () => {
-        db.prepare("DELETE FROM video_jobs WHERE id = ?").run(id);
-        clearPendingOutput.run(id);
-      });
+      if (relocatingJobs.has(id)) throw new Error("视频正在重新关联，请稍后再移除记录。");
+      removeVideoRecord(id);
     });
     res.json({ ok: true });
   } catch (error) { next(error); }
 });
-const retryLocks = new Set<string>();
 app.post("/api/jobs/clear-incomplete", (req, res, next) => {
   const ids: unknown = req.body?.ids;
   if (!Array.isArray(ids) || !ids.length || ids.some(id => typeof id !== "string" || !id)) {
@@ -1926,7 +1994,7 @@ app.post("/api/recovery/:id/confirm", async (req, res, next) => {
         throw new Error("当前只有试听片段，请明确选择保存试听。");
       if (!["mp3", "m4a", "original"].includes(req.body?.format)) throw new Error("请选择有效输出格式。");
       existingDirectory(job.outputDir || legacyOutput);
-      Object.assign(job, { format: req.body.format, completeness: plan.resource.completeness,
+      Object.assign(job, { format: req.body.format, completeness: plan.resource.completeness, audioSource: plan.resource.audioSource,
         requiresFullAudio: undefined, selection: { quality: choice.quality, bitrate: choice.bitrate, format: choice.format } });
       queueRecovered(job, plan, choice.id);
     });

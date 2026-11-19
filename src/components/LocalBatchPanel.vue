@@ -181,7 +181,7 @@ defineExpose({ addFiles: add });
         <p>每批最多 20 个文件 · 单个 500 MB · 合计 2 GB</p>
       </div>
       <button
-        class="text-button"
+        class="secondary local-batch-back"
         :disabled="!!state.busy || loadingSettings"
         @click="emit('single')"
       >
@@ -277,7 +277,6 @@ defineExpose({ addFiles: add });
           />历史已保存资源另存副本</label
         >
       </div>
-      <p>本批选项不修改默认设置；WAV 文件较大，转格式不会提高来源音质。</p>
       <p v-if="storageError" class="batch-issue" role="alert">
         {{ storageError }}
         <button
@@ -451,9 +450,6 @@ defineExpose({ addFiles: add });
       本批已完成 {{ done }} 个，正在处理
       {{ processing }} 个。移除或清空清单不取消已加入任务。
     </p>
-    <p class="local-footnote">
-      原文件保留。切换页面可继续查看本批；刷新或退出后，已加入的任务保留，未提交文件需重新选择。
-    </p>
   </div>
 </template>
 
@@ -470,6 +466,7 @@ defineExpose({ addFiles: add });
   gap: 14px;
   flex-wrap: wrap;
 }
+.local-batch-heading .local-batch-back { min-height: 40px; padding-inline: 15px; font-size: 14px; }
 h3 {
   font-size: 17px;
   margin: 0;
@@ -622,9 +619,6 @@ summary {
   align-items: center;
   gap: 7px;
   margin-top: 14px;
-}
-.local-footnote {
-  margin-top: 18px;
 }
 .local-result {
   display: flex;

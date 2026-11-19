@@ -31,9 +31,11 @@ try {
   renameSync(videoDir, videoDir + '-away');
   const blocked = await api('/api/video', { input: '无效测试视频' });
   assert.equal(blocked.status, 400);
-  assert.match(blocked.data.error, /文件夹不存在或不可写/);
+  assert.equal(blocked.data.error, '文件夹已移走或磁盘未连接。');
   renameSync(videoDir + '-away', videoDir);
   await page.getByRole('button', {name:'视频提取', exact:true}).click();
+  await page.getByRole('region', {name:'最近视频任务'}).getByRole('button', {name:'查看全部', exact:true}).click();
+  await page.getByRole('button', {name:'队列操作', exact:true}).click();
   await page.getByRole('button', {name:'暂停视频队列', exact:true}).click();
   await page.getByRole('button', {name:'继续视频队列', exact:true}).waitFor();
   assert.equal((await api('/api/queue')).data.paused, false);
@@ -43,10 +45,9 @@ try {
   }, once);
   assert.equal(new Set(tasks.map(x => x.id)).size, 3);
   assert.deepEqual((await api('/api/video/queue')).data, {paused:true,active:0,waiting:3,limit:2});
-  await page.getByRole('button', {name:'任务', exact:true}).click();
-  await page.getByRole('group', {name:'按文件类型筛选任务'}).getByRole('button', {name:'视频', exact:true}).click();
+  const videoFilter = page.getByRole('group', {name:'按文件类型筛选任务'}).getByRole('button', {name:'视频', exact:true});
+  assert.equal(await videoFilter.getAttribute('aria-pressed'), 'true');
   assert.equal(await page.getByText(/音频队列 0/).count(), 0);
-  await page.getByRole('button', {name:'队列操作', exact:true}).click();
   await page.getByRole('button', {name:'继续视频队列', exact:true}).click();
   await page.getByRole('button', {name:'视频提取', exact:true}).click();
   await page.locator('.video-result').first().waitFor();

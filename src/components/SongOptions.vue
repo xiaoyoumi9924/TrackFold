@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
-import { Check, FolderOpen } from "@lucide/vue";
 import type { Resource, Job, AudioMetadata } from "../../shared/types";
 
-const props = defineProps<{ resource: Resource; choice: string; format: string; revision: number; skipMatch?: boolean }>();
+const props = defineProps<{ resource: Resource; choice: string; format: string; revision: number; expanded: boolean }>();
 const emit = defineEmits<{ metadata: [AudioMetadata]; force: [boolean] }>();
-const title = ref(""), artist = ref(""), album = ref(""), forceCopy = ref(false), saved = ref<Job | null>(null);
+const title = ref(""), artist = ref(""), album = ref(""), forceCopy = ref(false), saved = ref(false);
 const clean = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 300);
 watch(() => props.resource.token, () => {
   title.value = clean(props.resource.title);
@@ -15,9 +14,10 @@ watch(() => props.resource.token, () => {
 }, { immediate: true });
 watch([title, artist, album], () => emit("metadata", { title: title.value, artist: artist.value, album: album.value }), { immediate: true });
 watch(forceCopy, value => emit("force", value), { immediate: true });
-watch(() => [props.resource.token, props.choice, props.format, props.revision, props.skipMatch], async (_value, _previous, cleanup) => {
-  saved.value = null;
-  if (props.skipMatch) return;
+watch(() => [props.resource.token, props.choice, props.format, props.revision], async (_value, _previous, cleanup) => {
+  saved.value = false;
+  if (_previous && (_value[0] !== _previous[0] || _value[1] !== _previous[1] || _value[2] !== _previous[2]))
+    forceCopy.value = false;
   const controller = new AbortController();
   cleanup(() => controller.abort());
   try {
@@ -27,45 +27,31 @@ watch(() => [props.resource.token, props.choice, props.format, props.revision, p
       signal: controller.signal,
     });
     if (!response.ok) return;
-    const result = await response.json();
-    if (!controller.signal.aborted) saved.value = result.job;
+    const result: { job: Job | null } = await response.json();
+    if (!controller.signal.aborted) {
+      saved.value = !!result.job;
+      if (!saved.value) forceCopy.value = false;
+    }
   } catch { /* The save request still checks history. */ }
 }, { immediate: true });
-async function reveal() {
-  if (saved.value) await fetch(`/api/jobs/${saved.value.id}/reveal`, { method: "POST" });
-}
 </script>
 
 <template>
-  <div v-if="saved" class="saved-match" role="status">
-    <p><Check :size="16" />这一音质与格式已保存</p>
-    <span>{{ saved.filename }}</span>
-    <div class="match-actions">
-      <a :href="`/api/jobs/${saved.id}/file`">打开已保存文件</a>
-      <button class="text-button" @click="reveal"><FolderOpen :size="14" />显示位置</button>
-    </div>
-    <label><input v-model="forceCopy" type="checkbox" />仍保存副本，应用下方歌曲信息</label>
-    <small v-if="!forceCopy">直接保存将复用历史文件，不会修改原文件信息。</small>
-  </div>
-  <details class="song-options" :open="resource.platform === 'local'">
-    <summary>整理歌曲信息</summary>
+  <div id="extraction-song-options" v-show="expanded" class="song-options">
     <label>歌曲标题<input v-model="title" maxlength="300" /></label>
     <label>{{ resource.platform === "douyin" || resource.platform === "bilibili" ? "作者 / 发布者" : "歌手" }}<input v-model="artist" maxlength="300" /></label>
     <label>专辑（可选）<input v-model="album" maxlength="300" placeholder="不确定时留空" /></label>
-    <p>写入输出文件；命名与封面偏好可在设置中调整。</p>
-  </details>
+    <p>歌曲信息会写入保存的音频。</p>
+    <label v-if="saved" class="song-copy"><input v-model="forceCopy" type="checkbox" />另存副本并应用歌曲信息</label>
+  </div>
 </template>
 
 <style scoped>
-.song-options { margin: 16px 0; border-top: 1px solid var(--line); padding-top: 14px; }
-summary { cursor: pointer; font-size: 13px; font-weight: 600; }
-.song-options label { display: grid; gap: 5px; margin-top: 13px; font-size: 12px; }
+.song-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 12px; margin-top: 10px; }
+.song-options label { display: grid; gap: 5px; min-width: 0; font-size: 12px; }
+.song-options > :first-child, .song-options p { grid-column: 1 / -1; }
 input:not([type="checkbox"]) { width: 100%; min-height: 38px; border: 1px solid var(--field-border); border-radius: 6px; padding: 8px; background: var(--field-surface); color: var(--ink); font: inherit; }
-p, small { font-size: 12px; line-height: 1.6; }
-.song-options p { color: var(--muted); }
-.saved-match { margin-top: 16px; padding: 12px; background: var(--field-surface); border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
-.saved-match p { display: flex; gap: 6px; align-items: center; margin: 0 0 5px; font-weight: 600; }
-.saved-match span, .saved-match label, .saved-match small { display: block; font-size: 12px; margin-top: 8px; }
-.match-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 10px; font-size: 12px; }
-.match-actions a { color: var(--accent); }
+.song-options p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.song-options .song-copy { grid-column: 1 / -1; display: flex; align-items: center; }
+.song-copy input { accent-color: var(--accent); }
 </style>

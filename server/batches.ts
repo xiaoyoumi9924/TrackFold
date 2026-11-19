@@ -48,9 +48,11 @@ export class Batches {
       this.persist(batch);
     }
   }
-  discoveryHistory() {
+  discoveryHistory(unfinishedJob?: (id: string) => boolean) {
     return [...this.data.values()].reverse().filter(batch => batch.discovery).slice(0, 20).map(batch => ({
       id: batch.id, createdAt: batch.createdAt, title: batch.discovery!.title, status: batch.status, total: batch.items.length,
+      needsAttention: batch.items.some(item =>
+        !["submitted", "duplicate"].includes(item.status) || (!!item.jobId && unfinishedJob?.(item.jobId))),
     }));
   }
   createDiscovery(tracks: unknown, title: unknown, autoSave?: DiscoverySaveOptions) {
@@ -300,7 +302,9 @@ export class Batches {
           );
           item.resource = resource;
           const autoSave = batch.discovery?.autoSave;
-          if (!duplicate && autoSave && resource.completeness === "full" && this.saveDiscoveryTrack) {
+          const canSave = resource.completeness === "full" ||
+            (resource.completeness === "preview" && autoSave?.allowPreview);
+          if (!duplicate && autoSave && canSave && this.saveDiscoveryTrack) {
             this.attachJob(item, this.saveDiscoveryTrack(resource, autoSave, batch.id, item.id));
             continue;
           }

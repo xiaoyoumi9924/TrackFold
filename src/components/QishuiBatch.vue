@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { LoaderCircle, RotateCw, Square } from "@lucide/vue";
 import type { Batch, BatchItem, Job, Resource } from "../../shared/types";
 
 type BatchSummary = { id: string; createdAt: string; title: string; status: Batch["status"]; total: number };
 const props = defineProps<{ initialId: string; jobs: Job[] }>();
-const emit = defineEmits<{ song: [id: string, resource: Resource] }>();
+const emit = defineEmits<{ song: [id: string, resource: Resource, batchId: string, itemId: string]; complete: [id: string]; issues: [count: number] }>();
 const list = ref<BatchSummary[]>([]);
 const selectedId = ref("");
 const batch = ref<Batch>();
@@ -22,9 +22,31 @@ const waiting = computed(() => batch.value?.items.filter(item => item.status ===
 const done = computed(() => batch.value?.items.filter(item => ["ready", "duplicate", "submitted"].includes(item.status)).length ?? 0);
 const submitted = computed(() => batch.value?.items.filter(item => item.status === "submitted").length ?? 0);
 const review = computed(() => batch.value?.items.filter(item => item.status === "ready").length ?? 0);
-const failed = computed(() => batch.value?.items.filter(item => item.status === "failed").length ?? 0);
 const retryable = computed(() => batch.value?.items.some(item => ["failed", "cancelled", "stale"].includes(item.status)));
 const jobsById = computed(() => new Map(props.jobs.map(job => [job.id, job])));
+function linkedJob(item: BatchItem) {
+  return item.jobId ? jobsById.value.get(item.jobId) : undefined;
+}
+function failure(item: BatchItem) {
+  const job = linkedJob(item);
+  if (item.status === "failed") return item.message || "音频不可用。";
+  if (job?.status === "failed") return job.message || "保存音频失败。";
+  if (job?.status === "cancelled") return job.message || "已取消保存。";
+  if (job?.fileExists === false && job.status === "completed") return "已保存的音频文件找不到。";
+  return "";
+}
+const failed = computed(() => batch.value?.items.filter(item => failure(item)).length ?? 0);
+watch(failed, count => emit("issues", count));
+const complete = computed(() => {
+  const current = batch.value;
+  return current?.id === props.initialId && current.status === "ready" && current.items.length > 0 &&
+    current.items.every(item => {
+      if (item.status === "duplicate") return true;
+      const job = linkedJob(item);
+      return item.status === "submitted" && job?.status === "completed" && job.fileExists !== false;
+    });
+});
+watch(complete, value => { if (value) emit("complete", props.initialId); });
 const states: Record<BatchItem["status"], string> = {
   listed: "未解析", waiting: "等待中", resolving: "正在解析", failed: "失败", cancelled: "已停止",
   stale: "待重新解析", ready: "已解析", duplicate: "重复", submitted: "已加入提取",
@@ -34,10 +56,11 @@ const jobStates: Record<Job["status"], string> = {
   completed: "已保存", failed: "保存失败", cancelled: "已取消",
 };
 function badge(item: BatchItem) {
-  const job = item.jobId ? jobsById.value.get(item.jobId) : undefined;
+  const job = linkedJob(item);
   if (job) return job.status === "completed" && job.fileExists === false ? "文件缺失" : jobStates[job.status];
   if (item.status === "submitted") return item.message;
   if (item.status !== "ready") return states[item.status];
+  if (item.resource?.audioSource === "douyin") return "抖音原声";
   if (item.resource?.completeness === "full") return "完整音频";
   return item.resource?.completeness === "preview" ? "平台试听" : "完整性未知";
 }
@@ -84,11 +107,12 @@ async function control(action: "stop" | "retry") {
 }
 async function open(item: BatchItem) {
   if (!batch.value || !item.track || opening.value) return;
+  const id = batch.value.id;
   opening.value = item.id;
   error.value = "";
   try {
-    const resource = await request<Resource>(`${base}/${batch.value.id}/resource`, { itemId: item.id });
-    if (!disposed) emit("song", item.track.id, resource);
+    const resource = await request<Resource>(`${base}/${id}/resource`, { itemId: item.id });
+    if (!disposed) emit("song", item.track.id, resource, id, item.id);
   } catch (cause) { error.value = (cause as Error).message; }
   finally { opening.value = ""; }
 }
@@ -120,16 +144,17 @@ onUnmounted(() => { disposed = true; clearInterval(timer); });
           <span v-if="waiting"> · {{ waiting }} 首待解析</span>
           <span v-if="submitted"> · {{ submitted }} 首已交给音频队列</span>
           <span v-if="review"> · {{ review }} 首待确认</span>
-          <span v-if="failed"> · {{ failed }} 首失败</span>
         </div>
         <button v-if="batch.status === 'resolving'" class="secondary" :disabled="busy || updating" @click="control('stop')"><Square :size="15" />停止解析</button>
         <button v-else-if="retryable" class="secondary" :disabled="busy || updating" @click="control('retry')"><RotateCw :size="15" />重新解析未完成项</button>
         <progress v-if="batch.status === 'resolving'" :value="ended" :max="batch.items.length" aria-label="解析进度"></progress>
       </div>
+      <p v-if="failed" class="discovery-error" role="alert">{{ failed }} 首音频无法获取或保存，原因见下方歌曲。</p>
       <ul class="discovery-batch-list">
         <li v-for="item in batch.items" :key="item.id">
-          <div class="discovery-batch-song"><strong>{{ item.track?.title }}</strong><p>{{ item.track?.artist || '未知歌手' }}</p>
-            <p v-if="item.status === 'failed'" class="discovery-error">{{ item.message }}</p>
+          <div class="discovery-batch-song"><strong>{{ item.track?.title }}</strong>
+            <p>{{ item.track?.artist || '未知歌手' }}<template v-if="item.status === 'submitted' && item.resource?.completeness === 'preview'"> · {{ item.resource.audioSource === 'douyin' ? '抖音原声' : '平台试听' }}</template></p>
+            <p v-if="failure(item)" class="discovery-error">{{ failure(item) }}</p>
           </div>
           <span class="discovery-state" :class="item.jobId && jobsById.get(item.jobId)?.status || item.status">{{ badge(item) }}</span>
           <button v-if="item.status === 'ready'" class="secondary" :disabled="!!opening" @click="open(item)">

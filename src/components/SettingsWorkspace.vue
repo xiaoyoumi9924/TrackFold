@@ -6,6 +6,7 @@ import type { OutputFormat } from "../default-format";
 import type { SettingsSection } from "../settings-sections";
 import MaintenanceSettings from "./MaintenanceSettings.vue";
 import GeneralSettings from "./GeneralSettings.vue";
+import SleepTimer from "./SleepTimer.vue";
 import StoragePanel from "./StoragePanel.vue";
 import NotificationSettings from "./NotificationSettings.vue";
 import SeparationSettings from "./SeparationSettings.vue";
@@ -88,6 +89,7 @@ onMounted(readOrganization);
 
         <template v-if="section === 'general'">
           <GeneralSettings v-if="desktop" />
+          <SleepTimer v-if="desktop" />
           <section class="settings-card" aria-labelledby="settings-artwork-title">
             <h3 id="settings-artwork-title">音频封面</h3>
             <label class="settings-switch-row">

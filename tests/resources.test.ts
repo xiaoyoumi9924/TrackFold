@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildQishuiPlan,
+  douyinOriginalPlan,
   planNeedsRefresh,
   selectEquivalentChoice,
   platformFetch,
@@ -149,4 +150,20 @@ test("original clips can be previewed using their authenticated media type", asy
   await assert.rejects(resolveQishuiTrack(id, "sessionid=fixture"), /没有返回/);
   await assert.rejects(resolveQishuiTrack(id, "", { preview: true }), /试听资源/);
   assert.deepEqual(mediaTypes, ["track", "ugc_clip"]);
+});
+test("a missing Qishui track can use the same numbered Douyin sound", async (t) => {
+  const id = "7685268412867545875";
+  const sound = {
+    status_code: 0,
+    music_info: { id_str: id, title: "@天冷冷创作的原声", author: "天冷冷", duration: 21,
+      play_url: { url_list: ["https://lf26-music-east.douyinstatic.com/sample.mp3"] } },
+  };
+  t.mock.method(globalThis, "fetch", async () => Response.json({ status_code: 1000091 }));
+  assert.equal(douyinOriginalPlan("7685268412867545876", sound), undefined);
+  const result = await resolveQishuiTrack(id, "", { douyinOriginal: async requested => douyinOriginalPlan(requested, sound)! });
+  assert.equal(result.resource.sourceId, id);
+  assert.equal(result.resource.audioSource, "douyin");
+  assert.equal(result.resource.completeness, "preview");
+  assert.equal(result.resource.duration, 21);
+  assert.equal(result.resource.title, "天冷冷创作的原声");
 });
