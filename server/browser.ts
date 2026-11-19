@@ -1,8 +1,8 @@
-import { chromium, type BrowserContext } from "playwright";
-import { existsSync } from "node:fs";
+import type { BrowserContext } from "playwright";
 import { rm } from "node:fs/promises";
 import { findVideo } from "./providers.ts";
 import { interpretAccount, type Inspection } from "./accounts.ts";
+import { douyinBrowserProfile, launchDouyinBrowser } from "./douyin-browser.ts";
 let context: BrowserContext | undefined;
 let launching: Promise<BrowserContext> | undefined;
 let visible = false,
@@ -18,14 +18,7 @@ export async function browserContext(
   if (context) return context;
   if (launching) return launching;
   launching = (async () => {
-    const chrome =
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-    const own = await chromium.launchPersistentContext(profile, {
-      headless: !show,
-      executablePath: existsSync(chrome) ? chrome : undefined,
-      viewport: { width: 1280, height: 850 },
-      args: ["--disable-blink-features=AutomationControlled"],
-    });
+    const own = await launchDouyinBrowser(profile, show);
     context = own;
     visible = show;
     own.on("close", () => {
@@ -226,6 +219,7 @@ export async function forgetBrowser(profile: string) {
   loginClosed = undefined;
   await closeBrowser();
   await rm(profile, { recursive: true, force: true });
+  await rm(douyinBrowserProfile(profile, "msedge"), { recursive: true, force: true });
 }
 export async function closeBrowser() {
   loginClosed = undefined;

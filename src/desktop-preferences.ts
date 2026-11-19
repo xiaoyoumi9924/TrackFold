@@ -15,7 +15,7 @@ const bridge = () => (window as typeof window & { shiyinDesktop?: {
 } }).shiyinDesktop;
 export function generalPreferences(patch?: Partial<GeneralPreferences>) {
   const desktop = bridge();
-  if (!desktop) return Promise.reject(new Error("此设置在拾音 Mac 桌面版可用。"));
+  if (!desktop) return Promise.reject(new Error("此设置在拾音桌面版可用。"));
   return desktop.preferences(patch);
 }
 export function shutdownTimer(minutes?: number | null) {

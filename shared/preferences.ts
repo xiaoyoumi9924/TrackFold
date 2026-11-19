@@ -22,7 +22,8 @@ export function outputTitle(metadata: AudioMetadata, naming: LibrarySettings["na
 }
 
 export function titlePart(title: string) {
-  const safe = title.normalize("NFC").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[. ]+$/, "") || "audio";
+  const sanitized = title.normalize("NFC").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[. ]+$/, "") || "audio";
+  const safe = /^(?:CON|PRN|AUX|NUL|(?:COM|LPT)[1-9¹²³])(?:\.|$)/i.test(sanitized) ? `_${sanitized}` : sanitized;
   const encoder = new TextEncoder();
   let result = "", length = 0;
   for (const char of safe) {

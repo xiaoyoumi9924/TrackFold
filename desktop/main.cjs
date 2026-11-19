@@ -6,6 +6,8 @@ const { importLegacy } = require('./migrate.cjs');
 const { createHandoffQueue } = require('./handoff.cjs');
 const { desktopPreferences } = require('./preferences.cjs');
 const { createShutdownTimer } = require('./shutdown-timer.cjs');
+const mac = process.platform === 'darwin';
+const windows = process.platform === 'win32';
 
 const userData = process.env.SHIYIN_DESKTOP_DATA_DIR || (app.isPackaged
   ? path.join(app.getPath('appData'), '拾音') : path.join(app.getAppPath(), '.local/desktop-dev'));
@@ -42,11 +44,14 @@ function log(text) { fs.appendFileSync(logFile, `${new Date().toISOString()} ${t
 
 function startService(preferredPort = 0) {
   return new Promise((resolve, reject) => {
+    const developmentBin = path.join(app.getAppPath(), 'vendor', 'ffmpeg', mac ? '' : `${process.platform}-x64`);
+    const bin = app.isPackaged ? path.join(process.resourcesPath, 'bin') : developmentBin;
+    const extension = windows ? '.exe' : '';
     const env = { ...process.env, SHIYIN_APP_ROOT: app.getAppPath(), SHIYIN_DATA_DIR: data,
       SHIYIN_OUTPUT_DIR: process.env.SHIYIN_DESKTOP_OUTPUT_DIR || path.join(app.getPath('music'), '拾音'),
       SHIYIN_ACCESS_TOKEN: token, PORT: String(preferredPort),
-      SHIYIN_FFMPEG_PATH: app.isPackaged ? path.join(process.resourcesPath, 'bin/ffmpeg') : path.join(app.getAppPath(), 'vendor/ffmpeg/ffmpeg'),
-      SHIYIN_FFPROBE_PATH: app.isPackaged ? path.join(process.resourcesPath, 'bin/ffprobe') : path.join(app.getAppPath(), 'vendor/ffmpeg/ffprobe'),
+      SHIYIN_FFMPEG_PATH: path.join(bin, `ffmpeg${extension}`),
+      SHIYIN_FFPROBE_PATH: path.join(bin, `ffprobe${extension}`),
     };
     delete env.SODA_APP_DIR; delete env.SODA_FORCE_NATIVE;
     const service = utilityProcess.fork(path.join(app.getAppPath(), 'desktop-build/server.mjs'), ['--production'], {
@@ -101,6 +106,15 @@ function startService(preferredPort = 0) {
           });
           service.postMessage({ type: 'picker-result', id: message.id, path: result.canceled ? null : result.filePaths[0] });
         } catch { service.postMessage({ type: 'picker-result', id: message.id, path: null }); }
+      }
+      if (message?.type === 'open-path' && ['folder', 'reveal'].includes(message.action) &&
+          typeof message.file === 'string' && path.isAbsolute(message.file)) {
+        let error;
+        try {
+          if (message.action === 'reveal') shell.showItemInFolder(message.file);
+          else error = await shell.openPath(message.file);
+        } catch (cause) { error = cause.message; }
+        service.postMessage({ type: 'open-path-result', id: message.id, error });
       }
     });
     service.on('exit', code => {
@@ -219,7 +233,7 @@ function reveal(action) {
   window.focus();
   if (action) window.webContents.send('shiyin:action', action);
 }
-const mac = process.platform === 'darwin';
+const supportsLoginItem = (mac || windows) && app.isPackaged;
 const shortcutPattern = /^(?:CommandOrControl\+)?(?:Control\+)?(?:Alt\+)?(?:Shift\+)?(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|20)|Space|Up|Down|Left|Right|Backspace|Delete|Home|End|PageUp|PageDown)$/;
 let shortcut = '';
 function validShortcut(value) {
@@ -250,18 +264,18 @@ function registerShortcut(next, save = false) {
   shortcut = next;
 }
 function generalSettings() {
-  const login = mac && app.isPackaged ? app.getLoginItemSettings() : undefined;
+  const login = supportsLoginItem ? app.getLoginItemSettings() : undefined;
   return { shortcut: preferences.get().shortcut, loginSupported: !!login, shortcutActive: !!shortcut,
     openAtLogin: login?.openAtLogin || false, loginStatus: login?.status };
 }
 function updateGeneral(patch) {
-  if (typeof patch?.openAtLogin === 'boolean' && mac && app.isPackaged) {
-    app.setLoginItemSettings({ openAtLogin: patch.openAtLogin, type: 'mainAppService' });
+  if (typeof patch?.openAtLogin === 'boolean' && supportsLoginItem) {
+    app.setLoginItemSettings({ openAtLogin: patch.openAtLogin, ...(mac ? { type: 'mainAppService' } : {}) });
     const actual = app.getLoginItemSettings();
     if (actual.openAtLogin !== patch.openAtLogin && !(patch.openAtLogin && actual.status === 'requires-approval'))
-      throw new Error('系统没有应用登录项更改，请在系统设置的「登录项」中检查。');
+      throw new Error('系统没有应用开机自启动设置，请检查系统的启动应用权限。');
   }
-  if (mac && patch?.shortcut !== undefined) registerShortcut(patch.shortcut, true);
+  if (patch?.shortcut !== undefined) registerShortcut(patch.shortcut, true);
   return generalSettings();
 }
 function openExternal(url) {
@@ -291,6 +305,10 @@ else {
   app.on('before-quit', event => { if (!quitting) { event.preventDefault(); void requestQuit(); } });
   app.whenReady().then(async () => {
     app.setName('拾音');
+    if (windows) {
+      app.setAppUserModelId('io.github.xiaoyoumi9924.shiyin');
+      if (app.isPackaged) app.setAsDefaultProtocolClient('shiyin-audio');
+    }
     powerMonitor.on('resume', shutdownTimer.check);
     session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
       if (origin && details.url.startsWith(origin + '/')) details.requestHeaders['X-Shiyin-Token'] = token;
@@ -333,10 +351,8 @@ else {
         { label: '窗口', submenu: [{ role: 'minimize' }, { role: 'zoom' }] },
       ]));
       const general = preferences.get();
-      if (mac) {
-        try { registerShortcut(general.shortcut); }
-        catch (error) { log(error.message); }
-      }
+      try { registerShortcut(general.shortcut); }
+      catch (error) { log(error.message); }
       await window.loadURL(origin);
       if (!quitting) reveal();
       for (const arg of process.argv) if (arg.startsWith('shiyin-audio:')) acceptLink(arg);

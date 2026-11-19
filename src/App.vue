@@ -1385,6 +1385,7 @@ onUnmounted(() => {
                 >
               </div>
               <p v-if="account(platform).status !== 'not_connected'" class="account-message">{{ account(platform).message }}</p>
+              <p v-if="platform === 'douyin' && health?.browserReady === false" class="account-detail">请安装 Google Chrome 或 Microsoft Edge，再打开拾音。</p>
               <p
                 v-if="
                   account(platform).status === 'connected' &&

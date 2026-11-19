@@ -1,6 +1,6 @@
 {
   "name": "shiyin-local",
-  "version": "0.6.14",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,7 @@
     "check": "tsc --noEmit -p tsconfig.server.json",
     "desktop:build": "npm run build && node scripts/build-desktop.mjs",
     "desktop": "npm run desktop:build && electron .",
-    "desktop:pack": "npm run desktop:build && node scripts/package-desktop.mjs",
+    "desktop:pack": "node scripts/package-desktop.mjs",
     "test:desktop": "node scripts/check-desktop.mjs"
   },
   "dependencies": {
@@ -45,6 +45,8 @@
     "node": ">=24"
   },
   "main": "desktop/main.cjs",
+  "desktopName": "shiyin.desktop",
   "description": "拾音：汽水音乐与抖音视频本地音频工具",
+  "homepage": "https://github.com/xiaoyoumi9924/shiyin",
   "author": "xiaoyoumi9924"
 }

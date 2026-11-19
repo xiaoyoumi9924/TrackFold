@@ -2,9 +2,10 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import { parentPort, desktopPicker } from "./desktop-bridge.ts";
+export const nativePicker = !!parentPort || process.platform === "darwin";
 let opened = false;
 export async function chooseNative(kind: "folder" | "file", initial: string) {
-  if (process.platform !== "darwin")
+  if (!nativePicker)
     throw new Error("当前系统请使用手动填写路径。");
   if (opened)
     throw Object.assign(new Error("已有一个选择窗口，请先完成或取消。"), {

@@ -65,7 +65,7 @@ async function paste() {
     if (text.trim()) input.value = text;
     else emit("notice", "剪贴板没有可粘贴的文字。");
   } catch {
-    emit("notice", "请在输入框中按 ⌘V 粘贴分享链接。");
+    emit("notice", "请直接在输入框中粘贴分享链接。");
   }
   shareField.value?.focus();
 }

@@ -30,7 +30,8 @@ import {
   publishAudio,
   type PublishedCandidate,
 } from "./storage.ts";
-import { chooseNative } from "./native-picker.ts";
+import { chooseNative, nativePicker } from "./native-picker.ts";
+import { douyinBrowsers } from "./douyin-browser.ts";
 import {
   resolveQishui,
   resolveQishuiTrack,
@@ -62,7 +63,7 @@ import {
   clipRange,
 } from "./library.ts";
 import { probe, convert, download, run, prepareArtwork } from "./media.ts";
-import { parentPort, openVerificationWindow } from "./desktop-bridge.ts";
+import { desktopOpenPath, parentPort, openVerificationWindow } from "./desktop-bridge.ts";
 
 const root = process.env.SHIYIN_APP_ROOT || process.cwd(),
   local = process.env.SHIYIN_DATA_DIR || path.join(root, ".local"),
@@ -620,10 +621,8 @@ app.get("/api/health", async (_, res) => {
     outputDir: storage.outputDir,
     version: JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version,
     desktop: !!parentPort,
-    browserReady: existsSync(
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    ),
-    nativePicker: process.platform === "darwin",
+    browserReady: douyinBrowsers().length > 0,
+    nativePicker,
   });
 });
 app.get("/api/settings", (_, res) => res.json(accountSettings()));
@@ -2070,7 +2069,8 @@ app.post("/api/jobs/:id/reveal", async (req, res, next) => {
       .status(404)
       .json({ error: "文件已移走或删除，请检查保存目录。" });
   try {
-    if (process.platform === "darwin") await run("open", ["-R", file]);
+    if (parentPort) await desktopOpenPath("reveal", file);
+    else if (process.platform === "darwin") await run("open", ["-R", file]);
     else if (process.platform === "win32")
       await run("explorer", ["/select,", file]);
     else await run("xdg-open", [path.dirname(file)]);
@@ -2083,6 +2083,7 @@ async function openFolder(directory: string) {
   if (!existsSync(directory))
     throw new Error("文件夹目前不可用，请连接磁盘或重新选择位置。");
   try {
+    if (parentPort) return await desktopOpenPath("folder", directory);
     await run(
       process.platform === "darwin"
         ? "open"

@@ -1,42 +1,72 @@
 import { build } from 'esbuild';
-import { mkdir, copyFile, chmod, writeFile, readFile } from 'node:fs/promises';
+import { access, mkdir, copyFile, chmod, writeFile, readFile, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+
+const target = process.argv[2] || process.platform;
+const mediaDirectories = { darwin: 'vendor/ffmpeg', linux: 'vendor/ffmpeg/linux-x64', win32: 'vendor/ffmpeg/win32-x64' };
+if (!Object.hasOwn(mediaDirectories, target)) throw new Error('Unsupported desktop platform.');
+const sourceDir = mediaDirectories[target];
+const suffix = target === 'win32' ? '.exe' : '';
+const native = target === process.platform && process.arch === (target === 'darwin' ? 'arm64' : 'x64');
+const tools = ['ffmpeg', 'ffprobe'];
+try {
+  await Promise.all(tools.map(name => access(path.join(sourceDir, name + suffix))));
+} catch (cause) {
+  throw new Error(`缺少 ${target} 媒体组件。请先运行 sh scripts/build-media.sh ${target}。`, { cause });
+}
 await mkdir('desktop-build/bin', { recursive: true });
 await mkdir('desktop-build/licenses', { recursive: true });
 await mkdir('desktop-build/licenses/sources', { recursive: true });
 await build({ entryPoints: ['server/index.ts'], outfile: 'desktop-build/server.mjs', bundle: true,
   platform: 'node', format: 'esm', target: 'node24', packages: 'external', sourcemap: false });
-const binaries = [
-  ['ffmpeg', 'vendor/ffmpeg/ffmpeg'],
-  ['ffprobe', 'vendor/ffmpeg/ffprobe'],
-];
-let information = '# 拾音桌面测试版组件\n\n';
-for (const [name, source] of binaries) {
-  await chmod(source, 0o755);
-  const commandOutput = (arg) => {
-    const result = spawnSync(source, [arg], { encoding: 'utf8' });
-    if (result.status !== 0) throw new Error(`${name} 无法运行`);
-    return result.stdout + result.stderr;
-  };
-  const license = commandOutput('-L');
-  if (/not legally redistributable|nonfree parts/i.test(license)) throw new Error(`${name} 构建不可再分发，已停止打包。`);
-  await copyFile(source, `desktop-build/bin/${name}`);
-  await chmod(`desktop-build/bin/${name}`, 0o755);
-  await writeFile(`desktop-build/licenses/${name}-license.txt`, license);
-  const flags = commandOutput('-buildconf');
-  await writeFile(`desktop-build/licenses/${name}-build.txt`, flags);
-  const links = spawnSync('otool', ['-L', source], { encoding: 'utf8' });
-  if (links.status !== 0 || links.stdout.split('\n').slice(1).some(line => line.trim() && !/^\s+\/(usr\/lib|System\/Library)\//.test(line)))
-    throw new Error(`${name} 依赖非系统动态库，已停止打包。`);
-  await writeFile(`desktop-build/licenses/${name}-libraries.txt`, links.stdout);
+function inspect(command, args) {
+  const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+  if (result.status !== 0) throw new Error(`无法验证 ${command} ${args.join(' ')}`, { cause: result.error });
+  return result.stdout + result.stderr;
 }
-await copyFile('vendor/ffmpeg/COPYING.LGPLv2.1', 'desktop-build/licenses/COPYING.LGPLv2.1');
-await copyFile('vendor/ffmpeg/LAME-COPYING', 'desktop-build/licenses/LAME-COPYING');
+const libraryCommands = { darwin: ['otool', '-L'], linux: ['ldd'], win32: ['x86_64-w64-mingw32-objdump', '-p'] };
+for (const name of tools) {
+  const source = path.join(sourceDir, name + suffix);
+  const dest = path.join('desktop-build/bin', name + suffix);
+  const alternate = path.join('desktop-build/bin', name + (suffix ? '' : '.exe'));
+  await rm(alternate, { force: true });
+  for (const kind of ['license', 'build', 'libraries'])
+    await rm(`desktop-build/licenses/${name}-${kind}.txt`, { force: true });
+  if (native) {
+    const license = inspect(source, ['-L']);
+    if (!/LGPL|Lesser General Public License/i.test(license) || /not legally redistributable|nonfree parts/i.test(license))
+      throw new Error(`${name} 构建不是可分发的 LGPL 版本。`);
+    await writeFile(`desktop-build/licenses/${name}-license.txt`, license);
+    await writeFile(`desktop-build/licenses/${name}-build.txt`, inspect(source, ['-buildconf']));
+  }
+  if ((native && target !== 'win32') || (process.platform === 'linux' && target === 'win32')) {
+    const [command, ...args] = libraryCommands[target];
+    const output = inspect(command, [...args, source]);
+    const links = target === 'win32' ? output.split('\n').filter(line => /file format|DLL Name:/i.test(line)).join('\n') : output;
+    const externalMac = target === 'darwin' && links.split('\n').slice(1)
+      .some(line => line.trim() && !/^\s+\/(usr\/lib|System\/Library)\//.test(line));
+    const externalLinux = target === 'linux' && /not found|lib(?:mp3lame|avcodec|avformat|avutil|swresample|swscale)\.so/i.test(links);
+    const externalWindows = target === 'win32' && (!/file format pei-x86-64/.test(links) ||
+      [...links.matchAll(/DLL Name: (\S+)/gi)].some(([, dll]) => !/^(?:api-ms-win-.*|advapi32|avicap32|bcrypt|gdi32|kernel32|msvcrt|ole32|oleaut32|secur32|shell32|shlwapi|user32|vfw32|ws2_32)\.dll$/i.test(dll)));
+    if (externalMac || externalLinux || externalWindows) throw new Error(`${name} 使用了无法随应用分发的动态库。\n${links}`);
+    await writeFile(`desktop-build/licenses/${name}-libraries.txt`, links);
+  }
+  await copyFile(source, dest);
+  await chmod(dest, 0o755);
+}
+await copyFile(path.join(sourceDir, 'COPYING.LGPLv2.1'), 'desktop-build/licenses/COPYING.LGPLv2.1');
+await copyFile(path.join(sourceDir, 'LAME-COPYING'), 'desktop-build/licenses/LAME-COPYING');
 await copyFile('vendor/sources/ffmpeg-6.1.1.tar.xz', 'desktop-build/licenses/sources/ffmpeg-6.1.1.tar.xz');
 await copyFile('vendor/sources/lame-3.100.tar.gz', 'desktop-build/licenses/sources/lame-3.100.tar.gz');
 await copyFile('scripts/build-media.sh', 'desktop-build/licenses/build-media.sh');
-information += 'FFmpeg / FFprobe 6.1.1，本项目从官方源码构建，LGPL-2.1-or-later，未启用 GPL 或 nonfree。\nFFmpeg 源码：https://ffmpeg.org/releases/ffmpeg-6.1.1.tar.xz\nLAME 3.100 / LGPL-2.0-or-later：https://sourceforge.net/projects/lame/files/lame/3.100/\n构建命令见 build-media.sh，构建选项见 ffmpeg-build.txt。\n\n';
-information += 'Electron 45.3.3 / MIT；发行包内 Electron LICENSE 与 LICENSES.chromium.html 包含其许可。其他运行组件许可随各自 node_modules 提供。\n这是本机测试版，尚未签署 Developer ID 或公证。抖音浏览器解析需要已安装 Google Chrome。\n';
-await writeFile('desktop-build/licenses/README.txt', information);
 const pkg = JSON.parse(await readFile('package.json', 'utf8'));
-console.log(`桌面服务 ${pkg.version} 已构建，媒体组件已检查。`);
+await writeFile('desktop-build/licenses/README.txt', [
+  '# 拾音桌面版组件', '',
+  'FFmpeg / FFprobe 6.1.1 采用 LGPL-2.1-or-later，未启用 GPL 或 nonfree。',
+  'FFmpeg 源码：https://ffmpeg.org/releases/ffmpeg-6.1.1.tar.xz',
+  'LAME 3.100 / LGPL-2.0-or-later：https://sourceforge.net/projects/lame/files/lame/3.100/',
+  `构建命令：sh build-media.sh ${target}`, '',
+  `Electron ${pkg.devDependencies.electron} / MIT，完整说明见发行包中的 Electron 和 Chromium 许可文件。`, '',
+].join('\n'));
+console.log(`桌面服务 ${pkg.version} 已构建，媒体组件目标为 ${target}。`);

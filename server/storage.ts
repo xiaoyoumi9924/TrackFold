@@ -18,6 +18,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import type { Job, StorageKind, StorageSettings } from "../shared/types.ts";
+import { nativePicker } from "./native-picker.ts";
 
 export function existingDirectory(value: unknown) {
   if (typeof value !== "string" || !value.trim() || value.includes("\0"))
@@ -26,7 +27,7 @@ export function existingDirectory(value: unknown) {
     ? path.join(os.homedir(), value.slice(2))
     : value;
   if (!path.isAbsolute(expanded))
-    throw new Error("请填写绝对路径，例如 /Users/你的用户名/Music。");
+    throw new Error("请填写保存文件夹的完整路径。");
   try {
     const directory = realpathSync(expanded);
     if (!statSync(directory).isDirectory()) throw new Error("所选路径不是文件夹。");
@@ -93,7 +94,7 @@ export class OutputStorage {
     try { this.directory(kind); } catch { available = false; }
     return {
       outputDir: this.current[kind], defaultOutputDir: this.defaultDirectory(kind), available,
-      nativePicker: process.platform === "darwin",
+      nativePicker,
       message: available ? "新建任务将保存到这里。" : "保存文件夹目前不可用，请连接磁盘或重新选择位置。",
     };
   }

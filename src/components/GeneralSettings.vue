@@ -6,13 +6,14 @@ const settings = ref<GeneralPreferences>();
 const busy = ref(false);
 const recording = ref(false);
 const error = ref("");
+const mac = navigator.platform.startsWith("Mac");
 const keyLabels: Record<string, string> = {
-  Control: "⌃", Alt: "⌥", Shift: "⇧", CommandOrControl: "⌘",
+  Control: mac ? "⌃" : "Ctrl", Alt: mac ? "⌥" : "Alt", Shift: mac ? "⇧" : "Shift", CommandOrControl: mac ? "⌘" : "Ctrl",
   Space: "空格", Up: "↑", Down: "↓", Left: "←", Right: "→",
   Backspace: "⌫", Delete: "⌦", Home: "↖", End: "↘", PageUp: "⇞", PageDown: "⇟",
 };
 const shortcutLabel = computed(() => settings.value?.shortcut
-  .split("+").map(key => keyLabels[key] ?? key).join(""));
+  .split("+").map(key => keyLabels[key] ?? key).join(mac ? "" : "+"));
 
 async function load(update?: Partial<GeneralPreferences>) {
   if (busy.value) return;
@@ -51,12 +52,12 @@ function recordShortcut(event: KeyboardEvent) {
   if (event.key === " ") key = "Space";
   if (/^Arrow(Up|Down|Left|Right)$/.test(event.key)) key = event.key.slice(5);
   if (["Backspace", "Delete", "Home", "End", "PageUp", "PageDown"].includes(event.key)) key = event.key;
-  if (!(event.metaKey || event.ctrlKey || event.altKey) || !(/^[A-Z0-9]$|^F(?:[1-9]|1[0-9]|20)$/.test(key) || keyLabels[key])) {
-    error.value = "请按住 ⌘、⌃ 或 ⌥，再按一个字母、数字、功能键或方向键。";
+  if (!(event.metaKey && mac || event.ctrlKey || event.altKey) || !(/^[A-Z0-9]$|^F(?:[1-9]|1[0-9]|20)$/.test(key) || keyLabels[key])) {
+    error.value = mac ? "请按住 ⌘、⌃ 或 ⌥，再按一个字母、数字、功能键或方向键。" : "请按住 Ctrl 或 Alt，再按一个字母、数字、功能键或方向键。";
     return;
   }
   const shortcut = [
-    event.metaKey && "CommandOrControl", event.ctrlKey && "Control", event.altKey && "Alt",
+    mac && event.metaKey && "CommandOrControl", event.ctrlKey && "Control", event.altKey && "Alt",
     event.shiftKey && "Shift", key,
   ].filter(Boolean).join("+");
   recording.value = false;
@@ -75,7 +76,7 @@ onUnmounted(() => { window.removeEventListener("focus", refresh); clearInterval(
 <template>
   <section class="settings-card general-settings-card">
     <template v-if="settings">
-      <label class="settings-switch-row">
+      <label v-if="settings.loginSupported" class="settings-switch-row">
         <span>开机自启动</span>
         <input type="checkbox" :checked="settings.openAtLogin" :disabled="busy || recording || !settings.loginSupported" @change="toggleLogin" />
       </label>

@@ -22,6 +22,7 @@ export function run(
           : command;
     const p = spawn(executable, args, {
       signal,
+      windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "",
