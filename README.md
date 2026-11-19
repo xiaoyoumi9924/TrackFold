@@ -12,7 +12,7 @@
 | macOS| [下载 macOS 版（.dmg）](https://github.com/xiaoyoumi9924/shiyin/releases/latest/download/Shiyin-macOS-Apple-Silicon.dmg) |
 | Linus| [下载 Linux 版（.deb）](https://github.com/xiaoyoumi9924/shiyin/releases/latest/download/Shiyin-Linux-x64.deb) |
 
- 与此同时要求**Microsoft Edge 或 Google Chrome**安装任意一个即可，Windows 优先使用 Edge。
+ 与此同时要求浏览器环境，**Microsoft Edge 或 Google Chrome**安装任意一个，Windows 优先使用 Edge。
 
 
 
