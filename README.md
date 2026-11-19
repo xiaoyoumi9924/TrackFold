@@ -84,5 +84,5 @@
 
 ## 来源与许可
 
-拾音使用 Electron、Vue、Playwright、[FFmpeg](https://ffmpeg.org/)、LAME 和 [soda-decrypt](https://github.com/520Qiuyu/qishui-decrypt-tool)。桌面安装包的 `resources/licenses/`（macOS 为 `Contents/Resources/licenses/`）包含媒体组件的许可、构建脚本和源码归档。
+[MIT](LICENSE)，拾音使用 Electron、Vue、Playwright、[FFmpeg](https://ffmpeg.org/)、LAME 和 [soda-decrypt](https://github.com/520Qiuyu/qishui-decrypt-tool)。
 
