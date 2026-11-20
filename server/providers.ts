@@ -453,9 +453,10 @@ export async function resolveDouyin(
   const r = await platformFetch(url.href, {
     headers: cookie && url.hostname === "www.douyin.com" ? { Cookie: cookie } : {},
   });
+  const finalUrl = new URL(r.url);
   const id =
-    r.url.match(/\/video\/(\d+)/)?.[1] ||
-    new URL(r.url).searchParams.get("modal_id");
+    finalUrl.pathname.match(/^\/(?:video|note)\/(\d{15,22})(?:\/|$)/)?.[1] ||
+    finalUrl.searchParams.get("modal_id");
   if (!id) throw new Error("没有找到视频编号，首版支持单条视频分享链接。");
   const html = await r.text();
   let video: any = null;

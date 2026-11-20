@@ -14,7 +14,7 @@ import type { AccountPlatform, Batch, Job, Resource, AudioQueueState, RecoveryIt
 import { Batches } from "./batches.ts";
 import { readPlaylist } from "./playlists.ts";
 import { searchTracks, myPlaylists } from "./discovery.ts";
-import { separate, checkSeparationRuntime } from "./separation.ts";
+import { separate, checkSeparationRuntime, startSeparationInstallation, separationInstallationBusy, cancelSeparationInstallation } from "./separation.ts";
 import { loudnessFilter } from "./loudness.ts";
 import { exportLibrary } from "./library-export.ts";
 import { groupKey, organizeLibrary, validGroupName } from "./library-organize.ts";
@@ -2061,6 +2061,10 @@ app.post("/api/jobs/:id/retry", async (req, res, next) => {
   } catch(error) { next(error); }
 });
 app.get("/api/separation/status", async (_, res) => res.json(await checkSeparationRuntime()));
+app.post("/api/separation/install", async (_, res, next) => {
+  try { res.status(202).json(await startSeparationInstallation()); }
+  catch (error) { next(error); }
+});
 let separationBusy = false;
 app.post("/api/jobs/:id/separate", async (req, res, next) => {
   try {
@@ -2254,6 +2258,7 @@ async function shutdown() {
   if (closing) return;
   closing = true;
   completionTracker?.close();
+  const separationStopped = cancelSeparationInstallation();
   const videoStopped = videoQueue.stop();
   clearInterval(qrTimer);
   bilibiliLogin.cancel();
@@ -2266,7 +2271,7 @@ async function shutdown() {
   for (const c of playlistRequests) c.abort();
   for (const c of previewRequests) c.abort();
   await verification.close();
-  await Promise.allSettled([qishuiLogin.suspend(), closeBrowser(), videoStopped, ...running, ...pendingDeletions]);
+  await Promise.allSettled([qishuiLogin.suspend(), closeBrowser(), videoStopped, ...running, ...(separationStopped ? [separationStopped] : []), ...pendingDeletions]);
   server.close();
   server.closeAllConnections();
   await removeTemporary(temp, true);
@@ -2282,6 +2287,7 @@ parentPort?.on("message", ({ data }) => {
       busy:
         active > 0 ||
         running.size > 0 ||
+        separationInstallationBusy() ||
         videoQueue.busy ||
         resolvingVideo.size > 0 ||
         pendingDeletions.size > 0 ||

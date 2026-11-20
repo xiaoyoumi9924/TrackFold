@@ -498,6 +498,25 @@ const accountLabel = (platform: AccountPlatform) =>
             : "等待扫码"
         : "等待窗口登录",
   })[account(platform).status];
+const accountSetupPromptKey = "shiyin-account-setup-prompt";
+const accountLoginNudge = ref(false);
+const anyAccountConnected = computed(() =>
+  (["qishui", "douyin", "bilibili"] as const).some(platform => account(platform).status === "connected"),
+);
+watch(anyAccountConnected, connected => {
+  if (!connected) return;
+  accountLoginNudge.value = false;
+  localStorage.setItem(accountSetupPromptKey, "complete");
+});
+function openAccountSettings() {
+  accountLoginNudge.value = false;
+  localStorage.setItem(accountSetupPromptKey, "complete");
+  openSettings("accounts");
+}
+function dismissAccountLoginNudge() {
+  accountLoginNudge.value = false;
+  localStorage.setItem(accountSetupPromptKey, "complete");
+}
 const recoveryJobId = ref("");
 const audioDestinationReady = ref(false);
 const songOptionsOpen = ref(false);
@@ -977,6 +996,10 @@ onMounted(async () => {
     const login = await api("/api/login/qishui/qr");
     qishuiQr.value = login.qr;
     settings.value = login;
+    if (!localStorage.getItem(accountSetupPromptKey)) {
+      if (anyAccountConnected.value) localStorage.setItem(accountSetupPromptKey, "complete");
+      else accountLoginNudge.value = true;
+    }
   } catch {
     error.value = "本地服务未连接，请重新启动工具。";
   }
@@ -1056,6 +1079,17 @@ onUnmounted(() => {
           <div class="page-heading">
             <h1>音频提取</h1>
           </div>
+          <section v-if="accountLoginNudge" class="account-login-nudge" aria-labelledby="account-login-nudge-title">
+            <span class="account-login-nudge-mark" aria-hidden="true"><Link2 :size="20" /></span>
+            <div class="account-login-nudge-copy">
+              <h2 id="account-login-nudge-title">先连接平台账号</h2>
+              <p>需要登录的内容可以在设置中连接账号；公开资源仍可直接解析。</p>
+            </div>
+            <div class="account-login-nudge-actions">
+              <button class="primary" type="button" @click="openAccountSettings">去设置登录账号<ArrowRight :size="16" /></button>
+              <button class="text-button" type="button" @click="dismissAccountLoginNudge">知道了</button>
+            </div>
+          </section>
           <div
             class="workspace-grid"
             :class="{ 'batch-workspace': mode === 'discovery' || (mode === 'file' && localBatchMode) }"

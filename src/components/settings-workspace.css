@@ -101,7 +101,12 @@
   border-radius: 12px;
   font-size: var(--settings-body);
 }
-.settings-storage-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; }
+.settings-storage-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px; }
+.settings-storage-action-status { flex: 1 1 140px; min-width: 0; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.settings-storage-action-buttons { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px 14px; }
+.settings-storage-action-buttons .text-button { min-height: 40px; }
+.settings-storage-action-buttons .secondary { min-height: var(--settings-control); display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.settings-storage-action-buttons .secondary svg { flex: none; }
 .settings-pane .storage-warning, .settings-inline-error { color: #ffac91; margin: 8px 0 0; }
 .settings-pane .storage-feedback { margin: 8px 0 0; }
 .settings-pane .error-message { flex-wrap: wrap; overflow-wrap: anywhere; }
@@ -179,7 +184,8 @@ label.settings-option { cursor: pointer; }
 .settings-control-copy small { color: var(--muted); font-size: 12px; line-height: 1.45; }
 .settings-component-status { color: var(--muted); margin: 10px 0 4px; overflow-wrap: anywhere; }
 .settings-component-status.available { color: #a9e0a1; }
-.settings-component-status ~ .secondary { margin-top: 10px; }
+.settings-component-note { margin: 5px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.settings-component-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 
 .settings-account-card { padding-top: 0; }
 .settings-account-card .account-block:first-of-type { border-top: 0; }
@@ -221,6 +227,11 @@ label.settings-option { cursor: pointer; }
   .settings-storage-path { gap: 4px; }
   .settings-storage-path input { font-size: 14px; }
   .workspace-theme .settings-storage-row .settings-change-location { min-width: 73px; font-size: 14px; }
+  .settings-storage-actions { align-items: stretch; flex-direction: column; gap: 6px; }
+  .settings-storage-action-status { flex-basis: auto; }
+  .settings-storage-action-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; }
+  .settings-storage-action-buttons .secondary { grid-column: 1 / -1; grid-row: 1; }
+  .settings-storage-action-buttons .text-button { text-align: center; }
   .settings-rail nav button { white-space: normal; }
 }
 

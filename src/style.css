@@ -1756,6 +1756,33 @@ audio {
   border-radius: 7px;
   background: linear-gradient(#ffa490, #f47c66);
 }
+.workspace-theme .page-heading:has(+ .account-login-nudge) { margin-bottom: 12px; }
+.account-login-nudge {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 19px;
+  padding: 13px 16px;
+  border: 1px solid #624840;
+  border-radius: 14px;
+  background: linear-gradient(112deg, #382623, #302220 70%);
+}
+.account-login-nudge-mark {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  color: #ffb099;
+  background: #52342f;
+}
+.account-login-nudge-copy { min-width: 0; }
+.account-login-nudge-copy h2 { margin: 0 0 2px; color: var(--ink); font-size: clamp(15px, 1.18vw, 18px); line-height: 1.4; }
+.account-login-nudge-copy p { margin: 0; color: #ddc8bd; font-size: clamp(12px, .92vw, 14px); line-height: 1.55; }
+.account-login-nudge-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px 12px; }
+.workspace-theme .account-login-nudge-actions .primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 7px 12px; border-radius: 10px; font-size: 13px; white-space: nowrap; }
+.account-login-nudge-actions .text-button { min-height: 40px; white-space: nowrap; }
 .workspace-theme .workspace-grid {
   grid-template-columns: minmax(0, 51.3fr) minmax(0, 48.7fr);
   gap: 0;
@@ -2140,6 +2167,8 @@ audio {
   .workspace-theme .jobs-section .job-row .job-state { flex: 1; }
   .bottom-player { gap: 12px; }
   .player-controls { gap: 8px; }
+  .account-login-nudge { grid-template-columns: 40px minmax(0, 1fr); }
+  .account-login-nudge-actions { grid-column: 2; justify-content: flex-start; }
 }
 @media (max-width: 680px) {
   .app-shell { --player-height: 76px; }
@@ -2158,6 +2187,10 @@ audio {
   .workspace-theme .sidebar nav button { flex: none; min-height: 36px; padding: 4px 5px; gap: 5px; font-size: 12px; border-radius: 8px; }
   .workspace-theme .app-main, .workspace-theme:has(.window-drag-area) .app-main { margin-left: 0; }
   .workspace-theme .sidebar .window-drag-area { display: none; }
+  .account-login-nudge { align-items: start; gap: 10px; margin-bottom: 16px; padding: 12px; }
+  .account-login-nudge-mark { width: 36px; height: 36px; }
+  .account-login-nudge-actions { grid-column: 1 / -1; justify-content: space-between; }
+  .workspace-theme .account-login-nudge-actions .primary { flex: 1; }
   .workspace-theme .resolve-row p { font-size: 11px; }
   .workspace-theme .tabs button { gap: 6px; padding-inline: 7px; }
   .workspace-theme .tabs button svg { width: 19px; }

@@ -51,7 +51,7 @@ async function choose() {
     if (data.path) {
       draft.value = data.path.replace(/\/$/, "") || "/";
       editing.value = true;
-      message.value = "已选择文件夹，点击“应用保存位置”后生效。";
+      message.value = "";
     } else message.value = "已取消选择，保存位置未变更。";
   } catch (e) {
     error.value = (e as Error).message;
@@ -115,14 +115,19 @@ onMounted(load);
           </button>
         </div>
         <div v-if="editing || dirty || !settings.available" class="settings-storage-actions">
-          <button class="text-button" type="button" :disabled="!!busy" @click="draft = settings.defaultOutputDir; editing = true; message = ''; error = ''">
-            选用默认位置
-          </button>
-          <button v-if="editing || dirty" class="text-button" type="button" :disabled="!!busy" @click="cancelDraft">取消更改</button>
-          <button class="secondary" :disabled="!!busy || !draft.trim() || (!dirty && settings.available)">
-            <LoaderCircle v-if="busy === 'save'" :size="16" class="spin" /><Check v-else :size="16" />
-            {{ busy === "save" ? "正在检查并保存…" : "应用保存位置" }}
-          </button>
+          <p class="settings-storage-action-status" role="status">
+            {{ dirty ? "新位置尚未应用" : !settings.available ? "请先选择一个可用位置" : "更改位置后，应用才会生效" }}
+          </p>
+          <div class="settings-storage-action-buttons">
+            <button class="text-button" type="button" :disabled="!!busy" @click="draft = settings.defaultOutputDir; editing = true; message = ''; error = ''">
+              选用默认位置
+            </button>
+            <button v-if="editing || dirty" class="text-button" type="button" :disabled="!!busy" @click="cancelDraft">取消更改</button>
+            <button class="secondary" :disabled="!!busy || !draft.trim() || (!dirty && settings.available)">
+              <LoaderCircle v-if="busy === 'save'" :size="16" class="spin" /><Check v-else :size="16" />
+              {{ busy === "save" ? "正在检查并保存…" : "应用保存位置" }}
+            </button>
+          </div>
         </div>
       </form>
       <p v-if="!settings.available" class="storage-warning" role="alert">

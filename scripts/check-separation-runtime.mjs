@@ -5,8 +5,16 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 
-const root = process.env.SHIYIN_SEPARATOR_RUNTIME || path.join(os.homedir(), 'Library/Application Support/拾音/separation-runtime');
-const python = path.join(root, 'bin/python');
+const dataRoot = process.platform === 'darwin'
+  ? path.join(os.homedir(), 'Library', 'Application Support', '拾音')
+  : process.platform === 'win32'
+    ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), '拾音')
+    : path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), '拾音');
+const root = process.env.SHIYIN_SEPARATOR_RUNTIME || path.join(dataRoot, 'separation-runtime');
+const pythonCandidates = process.platform === 'win32'
+  ? [path.join(root, 'python', 'python.exe'), path.join(root, 'Scripts', 'python.exe')]
+  : [path.join(root, 'python', 'bin', 'python3'), path.join(root, 'bin', 'python')];
+const python = pythonCandidates.find(existsSync) || pythonCandidates[0];
 const model = path.join(root, 'models/UVR-MDX-NET-Inst_HQ_3.onnx');
 const metadata = path.join(root, 'models/mdx_model_data.json');
 const expected = '317554b07fe1ea5279a77f2b1520a41ea4b93432560c4ffd08792c30fddf9adc';
