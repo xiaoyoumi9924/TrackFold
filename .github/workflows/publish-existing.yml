@@ -1,0 +1,41 @@
+name: Publish existing desktop build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful desktop build workflow run ID
+        required: true
+        type: string
+      tag:
+        description: Release tag to publish
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          path: release
+          merge-multiple: true
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ inputs.tag }}
+        run: gh release create "$TAG_NAME" release/* --title "拾音 ${TAG_NAME#v}" --generate-notes
