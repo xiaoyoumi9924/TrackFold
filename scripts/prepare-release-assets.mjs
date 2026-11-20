@@ -7,7 +7,7 @@ const target = process.argv[2];
 const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
 const assets = {
   darwin: { source: `Shiyin-${pkg.version}-mac-arm64.dmg`, alias: 'Shiyin-macOS-Apple-Silicon.dmg' },
-  linux: { source: `Shiyin-${pkg.version}-linux-x64.deb`, alias: 'Shiyin-Linux-x64.deb' },
+  linux: { source: `Shiyin-${pkg.version}-linux-amd64.deb`, alias: 'Shiyin-Linux-x64.deb' },
   win32: { source: `Shiyin-${pkg.version}-windows-x64.exe`, alias: 'Shiyin-Windows-x64.exe' },
 };
 const asset = assets[target];
