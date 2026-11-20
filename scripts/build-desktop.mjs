@@ -35,6 +35,7 @@ for (const name of tools) {
   const dest = path.join('desktop-build/bin', name + suffix);
   const alternate = path.join('desktop-build/bin', name + (suffix ? '' : '.exe'));
   await rm(alternate, { force: true });
+  if (target !== 'win32') await chmod(source, 0o755);
   for (const kind of ['license', 'build', 'libraries'])
     await rm(`desktop-build/licenses/${name}-${kind}.txt`, { force: true });
   if (native) {

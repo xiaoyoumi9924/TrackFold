@@ -16,7 +16,7 @@ try {
   const samePlatform = target === process.platform && process.arch === (target === 'darwin' ? 'arm64' : 'x64');
   const useLocalElectron = samePlatform && existsSync('node_modules/electron/path.txt') && existsSync('node_modules/electron/dist');
   execFileSync(process.execPath, [path.resolve('node_modules/electron-builder/cli.js'),
-    '--config', 'electron-builder.cjs', ...targets[target],
+    '--config', 'electron-builder.cjs', ...targets[target], '--publish', 'never',
     `--config.directories.output=${staging}`,
   ], { stdio: 'inherit', env: { ...process.env, SHIYIN_USE_LOCAL_ELECTRON: useLocalElectron ? '1' : '0' } });
 
