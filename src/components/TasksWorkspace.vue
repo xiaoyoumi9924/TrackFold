@@ -9,8 +9,6 @@ import AudioCover from "./AudioCover.vue";
 import VideoCover from "./VideoCover.vue";
 import FileLocation from "./FileLocation.vue";
 import QishuiBatch from "./QishuiBatch.vue";
-import ListPagination from "./ListPagination.vue";
-import { useListPagination } from "../list-pagination";
 import "./tasks-workspace.css";
 
 type TaskFilter = "all" | "active" | "completed" | "failed";
@@ -105,7 +103,6 @@ const clearable = computed(() => props.jobs.filter(job => canClear(job) && !job.
 const term = computed(() => query.value.trim().toLowerCase());
 const visibleRows = computed(() => groups.value[filter.value].filter(row => !term.value ||
   `${row.task.title || "视频任务"} ${row.task.artist || ""}`.toLowerCase().includes(term.value)));
-const { page, pageCount, pageItems } = useListPagination(visibleRows);
 const audioFailures = computed(() => props.jobs.filter(job => job.status === "failed" && !job.interrupted).length);
 const platforms = { local: "本地文件", douyin: "抖音", qishui: "汽水音乐", bilibili: "B 站" };
 const statusLabels = { queued: "等待中", downloading: "处理中", processing: "处理中", working: "处理中", checking: "核对文件", completed: "已完成", failed: "失败", cancelled: "已取消" };
@@ -124,18 +121,9 @@ function showProgress(row: TaskRow) {
   return isActive(job) && job.status !== "queued" && job.kind !== "vocals" && job.kind !== "instrumental";
 }
 watch([type, filter, term], () => {
-  page.value = 1;
   if (list.value) list.value.scrollTop = 0;
   closeMenu();
 });
-watch(page, () => {
-  const section = list.value;
-  if (section) {
-    section.scrollTop = 0;
-    if (section.getBoundingClientRect().top < 0) section.scrollIntoView({ block: "start" });
-  }
-  closeMenu();
-}, { flush: "post" });
 
 function confirmClear(jobs: Job[]) {
   closeMenu();
@@ -279,17 +267,32 @@ function videoAction(action: VideoTaskAction, task: VideoTask) {
           <button v-if="!rows.length" class="secondary" @click="emit('create')"><Plus :size="17" />新建提取</button>
           <button v-else class="secondary" @click="type = 'all'; filter = 'all'; query = ''">查看全部</button>
         </div>
-        <article v-for="row in pageItems" :key="keyOf(row)" class="job-row task-row">
+        <article v-for="row in visibleRows" :key="keyOf(row)" class="job-row task-row" :class="{ 'is-playing': row.kind === 'audio' && playing === row.task.id }">
           <div class="task-track">
-            <AudioCover v-if="row.kind === 'audio'" :src="row.task.cover" />
-            <VideoCover v-else :src="row.task.cover" />
-            <div class="task-track-text">
-              <div class="task-track-name">
-                <h3 :title="row.task.title">{{ row.task.title || "视频任务" }}</h3>
-                <span v-if="row.kind === 'audio' && row.task.completeness === 'preview'" class="preview-badge">{{ row.task.audioSource === 'douyin' ? '抖音原声' : '试听' }}</span>
+            <button v-if="row.kind === 'audio' && row.task.status === 'completed' && row.task.fileExists !== false" class="task-track-play" :aria-label="playing === row.task.id ? `暂停播放 ${row.task.title}` : `播放音频 ${row.task.title}`" @click="runAction('play', row.task)">
+              <span class="task-track-art">
+                <AudioCover :src="row.task.cover" />
+                <span class="task-track-play-icon" aria-hidden="true"><Pause v-if="playing === row.task.id" :size="16" fill="currentColor" /><Play v-else :size="17" fill="currentColor" /></span>
+              </span>
+              <span class="task-track-text">
+                <span class="task-track-name">
+                  <strong :title="row.task.title">{{ row.task.title || "音频任务" }}</strong>
+                  <span v-if="row.task.completeness === 'preview'" class="preview-badge">{{ row.task.audioSource === 'douyin' ? '抖音原声' : '试听' }}</span>
+                </span>
+                <span v-if="row.task.artist" class="task-track-artist">{{ row.task.artist }}</span>
+              </span>
+            </button>
+            <template v-else>
+              <AudioCover v-if="row.kind === 'audio'" :src="row.task.cover" />
+              <VideoCover v-else :src="row.task.cover" />
+              <div class="task-track-text">
+                <div class="task-track-name">
+                  <h3 :title="row.task.title">{{ row.task.title || "视频任务" }}</h3>
+                  <span v-if="row.kind === 'audio' && row.task.completeness === 'preview'" class="preview-badge">{{ row.task.audioSource === 'douyin' ? '抖音原声' : '试听' }}</span>
+                </div>
+                <p v-if="row.task.artist">{{ row.task.artist }}</p>
               </div>
-              <p v-if="row.task.artist">{{ row.task.artist }}</p>
-            </div>
+            </template>
           </div>
           <div class="task-source">
             <SourceIcon v-if="row.task.platform" :platform="row.task.platform" />
@@ -334,7 +337,6 @@ function videoAction(action: VideoTaskAction, task: VideoTask) {
           <FileLocation v-if="row.kind === 'audio' && row.task.status === 'completed' && row.task.fileExists === false" :job="row.task" :native-picker="nativePicker" @changed="emit('refresh')" />
         </article>
       </section>
-      <ListPagination v-model="page" :page-count="pageCount" label="任务列表分页" />
     </div>
 
     <div id="task-row-menu" ref="menu" popover class="task-row-menu" aria-label="任务操作">

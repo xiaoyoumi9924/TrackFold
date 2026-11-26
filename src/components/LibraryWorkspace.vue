@@ -6,8 +6,6 @@ import type { Job } from "../../shared/types";
 import AudioCover from "./AudioCover.vue";
 import FileLocation from "./FileLocation.vue";
 import LibraryFilters from "./LibraryFilters.vue";
-import ListPagination from "./ListPagination.vue";
-import { useListPagination } from "../list-pagination";
 import "./library-workspace.css";
 
 type PlaylistAction = "create" | "rename" | "remove";
@@ -57,7 +55,6 @@ const audio = computed(() => props.jobs.filter(job => job.status === "completed"
 const featured = computed(() => filterLibrary(audio.value, { ...emptyLibraryFilters, group: filters.value.group, favoriteOnly: filters.value.favoriteOnly, sort: filters.value.sort }));
 const favorites = computed(() => audio.value.filter(job => job.favorite));
 const shown = computed(() => filterLibrary(audio.value, filters.value));
-const { page, pageCount, offset, pageItems } = useListPagination(shown);
 const playable = computed(() => shown.value.filter(job => job.fileExists !== false));
 const collectionTitle = computed(() => filters.value.group || (filters.value.favoriteOnly ? "我喜欢的" : "全部歌曲"));
 const hasFilters = computed(() => Object.keys(emptyLibraryFilters).some(key => key !== "sort" &&
@@ -79,18 +76,9 @@ const artwork = computed(() => featured.value.filter(job => !!job.cover).slice(0
 const kindLabels = { full: "完整音频", preview: "试听片段", clip: "截取片段", unknown: "完整性未知", stem: "分离音轨", normalized: "音量统一副本" };
 
 watch(filters, () => {
-  page.value = 1;
   if (sortList.value) sortList.value.scrollTop = 0;
   closeMenu();
 }, { deep: true });
-watch(page, () => {
-  const list = sortList.value;
-  if (list) {
-    list.scrollTop = 0;
-    if (list.getBoundingClientRect().top < 0) list.scrollIntoView({ block: "start" });
-  }
-  closeMenu();
-}, { flush: "post" });
 watch(() => props.groups, groups => {
   if (filters.value.group && !groups.some(name => groupKey(name) === groupKey(filters.value.group))) filters.value.group = "";
 });
@@ -340,10 +328,10 @@ async function exportSelected(format: "m3u8" | "txt" | "bundle") {
               <button v-else-if="featured.length && hasFilters" class="secondary" @click="chooseCollection(filters.group, filters.favoriteOnly && !!featured.length)">清空筛选</button>
             </div>
 
-            <article v-for="(job, index) in pageItems" :key="job.id" class="job-row library-row library-song" :class="{ 'is-playing': playing === job.id && !paused, 'is-selected': selecting && selected.has(job.id) }">
+            <article v-for="(job, index) in shown" :key="job.id" class="job-row library-row library-song" :class="{ 'is-playing': playing === job.id && !paused, 'is-selected': selecting && selected.has(job.id) }">
               <div class="library-index">
                 <input v-if="selecting" v-model="selected" class="library-select" type="checkbox" :value="job.id" :disabled="exportBusy || membershipBusy || (!membershipTarget && job.fileExists === false && !selected.has(job.id))" :aria-label="`选择音频 ${job.title}`" />
-                <span v-else>{{ offset + index + 1 }}</span>
+                <span v-else>{{ index + 1 }}</span>
               </div>
               <h3 class="library-song-title" :title="job.title" :aria-label="job.title">
                 <button :disabled="job.fileExists === false" :aria-label="`播放音频 ${job.title}`" @click="playTrack(job)">
@@ -366,7 +354,6 @@ async function exportSelected(format: "m3u8" | "txt" | "bundle") {
               <FileLocation v-if="job.fileExists === false" :job="job" :native-picker="nativePicker" @changed="emit('refresh')" />
             </article>
           </section>
-          <ListPagination v-model="page" :page-count="pageCount" label="歌曲列表分页" />
         </div>
       </div>
     </div>
